@@ -55,12 +55,13 @@ JRA全体なら年間約3,450競走・約4.5万出走、20年で約90万行。�
 `D-009` に基づく。データ取得元が変わってもこの形は変えない。
 
 ```
-races    race_id, date, course, distance, surface, direction, grade,
-         track_condition, weather, n_starters, prize
+races    race_id, date, course, race_number, post_time,
+         distance, surface, direction, grade,
+         track_condition, weather, n_entries, n_starters, prize
 
 runners  race_id, horse_id, frame, number, jockey_id, trainer_id,
          weight_carried, horse_weight, weight_diff, age, sex,
-         odds_win, popularity, finish_pos, time, last_3f, corners
+         odds_win, popularity, status, finish_pos, time, last_3f, corners
 
 horses   horse_id, name, birth, sire_id, dam_id, damsire_id
 
@@ -70,8 +71,25 @@ payouts  race_id, bet_type, combination, payout
 ### 注意点
 
 - **`payouts` を省略しないこと。** 馬連・3連複の実配当は結果表から復元できず、バックテストが成立しなくなる。
-- `runners.corners` はコーナー通過順の配列。`F-101`（逃げ意欲）と `F-501`（当日内外バイアス）の両方が依存する。
+- `runners.corners` はコーナー通過順の配列。`F-101`（逃げ意欲）と `F-501`（当日内外バイアス）の両方が依存する。**要素数はレースによって変動する**（コーナー数が距離で変わるため）。`F-101` は1〜2角を要求するので、要素数が足りないレースは入力なしとして扱い、3角・4角で代用しない。
 - ラップタイムは `races` に別テーブルとして持つ（Stage 1の目的変数になるため）。
+- `race_number` / `post_time` は同日レースの前後判定に使う（`D-010`）。次項の規約に従うこと。
+- `status` は出走状態（`D-011`）。`n_entries`（出馬表頭数）と `n_starters`（実出走頭数）を分けて持つ（`D-012`）。
+
+### 同日レースの前後判定（`D-010`）
+
+`F-501` / `F-502` は同日レースを使う唯一の例外だが、**判定を誤ると検出困難なリークになる**。以下を守る。
+
+```sql
+-- 対象レースより前に発走した同日・同競馬場のレース
+WHERE date   =  target.date
+  AND course =  target.course      -- 別競馬場を混ぜない
+  AND race_number < target.race_number   -- <= にしない
+```
+
+- **`<=` にしない。** 対象レース自身を含めると、そのレースの結果が特徴量に入る。
+- **別競馬場を混ぜない。** 馬場バイアスは競馬場ごとの現象であり、他場の結果は情報にならないうえ、発走時刻の前後が `race_number` では判定できない。
+- 判定キーは `post_time` ではなく `(date, course, race_number)` を使う。同一開催内では R番号が発走順と一致し、かつ `post_time` より取得の確実性が高い。`post_time` は補助的に保持する。
 
 ### 将来の拡張（`D-005` Phase 4以降）
 
@@ -182,7 +200,7 @@ tests/
 - ハイパーパラメータを検証期間の成績で選ぶと、それ自体がオーバーフィットになる。
   → 学習期間内でのネストした時系列分割でチューニングする
 - 生存バイアス（引退馬・地方転出馬の扱い）
-- 出走取消・競走中止の扱い（払戻の返還を正しく処理する）
+- 出走取消・競走中止の扱い。`runners.status`（`D-011`）で区別する。**取消・除外は返還あり、競走中止・失格は返還なし**なので、一律に `finish_pos` を NULL にすると両者を区別できず、買えなかった馬券を買ったことにして収支が歪む
 
 ---
 
