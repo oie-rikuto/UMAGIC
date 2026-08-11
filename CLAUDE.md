@@ -20,6 +20,7 @@ JRA平地G1（年24競走前後）に限定した競馬予想モデル。出走�
 | `docs/open-questions.md` | 未決事項（`Q-xxx`） |
 | `docs/spec/` | 実装仕様書。**まだ空** |
 | `.claude/skills/spec-hearing/` | 仕様ヒアリング用スキル |
+| `tools/q011_feasibility/` | `Q-011` 確認用の使い捨てスパイク。`src/umagic/` の一部ではない |
 
 実装時の `src/umagic/` 以下の構成は `docs/architecture.md` 5節にある。ここには再掲しない。
 
