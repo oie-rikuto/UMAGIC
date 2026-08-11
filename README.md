@@ -13,7 +13,7 @@ JRA平地G1に限定した競馬予想モデル。
 | [`docs/decisions.md`](./docs/decisions.md) | 確定した設計判断とその根拠（D-001〜D-013） |
 | [`docs/domain-knowledge.md`](./docs/domain-knowledge.md) | プロの予想プロセスの形式化・特徴量カタログ |
 | [`docs/architecture.md`](./docs/architecture.md) | システム構成・スキーマ・評価設計・Phase計画 |
-| [`docs/open-questions.md`](./docs/open-questions.md) | 未決事項（Q-001〜Q-010） |
+| [`docs/open-questions.md`](./docs/open-questions.md) | 未決事項（Q-001〜Q-013） |
 | [`docs/spec/`](./docs/spec/) | 実装仕様書（今後追加） |
 
 初めて読む場合は [`docs/README.md`](./docs/README.md) から。
