@@ -14,15 +14,20 @@ JRA平地G1（年24競走前後）に限定した競馬予想モデル。出走�
 
 | パス | 役割 |
 |---|---|
+| `docs/requirements.md` | 満たすべき要件（`R-xxx`）。**まだ無い** |
 | `docs/decisions.md` | 設計判断と根拠（`D-xxx`） |
 | `docs/domain-knowledge.md` | 競馬ドメイン知識・特徴量カタログ（`F-xxx`） |
 | `docs/architecture.md` | 構成・スキーマ・評価設計・Phase計画（`P-x`） |
 | `docs/open-questions.md` | 未決事項（`Q-xxx`） |
 | `docs/spec/` | 実装仕様書。**まだ空** |
-| `.claude/skills/spec-hearing/` | 仕様ヒアリング用スキル |
+| `docs/tasks.md` | 実作業と完了条件。**まだ無い** |
+| `.claude/skills/spec-hearing/` | 要件・仕様のヒアリング用スキル |
+| `.claude/skills/task-breakdown/` | タスク分解用スキル |
 | `tools/q011_feasibility/` | `Q-011` 確認用の使い捨てスパイク。`src/umagic/` の一部ではない |
 
 実装時の `src/umagic/` 以下の構成は `docs/architecture.md` 5節にある。ここには再掲しない。
+
+**`design.md` は作らない（`D-019`）。** 設計は `architecture.md`（全体）と `docs/spec/`（モジュール単位）が担う。
 
 ## 技術スタック
 

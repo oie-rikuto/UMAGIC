@@ -10,11 +10,13 @@ JRA平地G1に限定した競馬予想モデル。
 
 | ドキュメント | 内容 |
 |---|---|
-| [`docs/decisions.md`](./docs/decisions.md) | 確定した設計判断とその根拠（D-001〜D-018） |
+| [`docs/requirements.md`](./docs/requirements.md) | 満たすべき要件（R-xxx）。**まだ無い** |
+| [`docs/decisions.md`](./docs/decisions.md) | 確定した設計判断とその根拠（D-001〜D-019） |
 | [`docs/domain-knowledge.md`](./docs/domain-knowledge.md) | プロの予想プロセスの形式化・特徴量カタログ |
 | [`docs/architecture.md`](./docs/architecture.md) | システム構成・スキーマ・評価設計・Phase計画 |
 | [`docs/open-questions.md`](./docs/open-questions.md) | 未決事項（Q-001〜Q-015） |
 | [`docs/spec/`](./docs/spec/) | 実装仕様書（今後追加） |
+| [`docs/tasks.md`](./docs/tasks.md) | 実作業と完了条件。**まだ無い** |
 
 初めて読む場合は [`docs/README.md`](./docs/README.md) から。
 
