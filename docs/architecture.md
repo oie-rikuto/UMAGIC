@@ -58,7 +58,7 @@ JRA全体なら年間約3,450競走・約4.5万出走、20年で約90万行。�
 races    race_id, date, course, race_number, post_time,
          distance, surface, direction, grade,
          track_condition, weather, weather_forecast,
-         n_entries, n_starters, prize
+         n_entries, n_starters, prize, corner_nos
 
 runners  race_id, horse_id, frame, number, jockey_id, trainer_id,
          weight_carried, horse_weight, weight_diff, age, sex,
@@ -78,7 +78,7 @@ odds     race_id, bet_type, combination, odds_low, odds_high, as_of
 ### 注意点
 
 - **`payouts` を省略しないこと。** 馬連・3連複の実配当は結果表から復元できず、バックテストが成立しなくなる。
-- `runners.corners` はコーナー通過順の配列。`F-101`（逃げ意欲）と `F-501`（当日の脚質バイアス）の両方が依存する。**要素数はレースによって変動する**（コーナー数が距離で変わるため）。`F-101` は1〜2角を要求するので、要素数が足りないレースは入力なしとして扱い、3角・4角で代用しない。
+- `runners.corners` はコーナー通過順の配列。`F-101`（逃げ意欲）と `F-501`（当日の脚質バイアス）の両方が依存する。**要素数はレースによって変動する**（コーナー数が距離で変わるため）。`races.corner_nos` が添字の意味を与え、`corners[i]` は `corner_nos[i]` のコーナーの通過順を表す（`D-043`）。`F-101` は1角を要求するので、**`corner_nos` に `1` を含まないレースは入力なしとして扱い、3角・4角で代用しない。** 要素数から番号を逆算しないこと。4角を超えるコースがあり、要素数と番号の対応は一意ではない。
 - ラップタイムは `races` に別テーブルとして持つ（Stage 1の目的変数になるため）。
 - `race_number` / `post_time` は同日レースの前後判定に使う（`D-010`）。次項の規約に従うこと。
 - `status` は出走状態（`D-011`）。`n_entries`（出馬表頭数）と `n_starters`（実出走頭数）を分けて持つ（`D-012`）。**`status` の2つの軸を混同しないこと。**
@@ -259,7 +259,7 @@ tests/
 
 | Phase | 内容 | 完了条件 |
 |---|---|---|
-| **P-0** | 中間スキーマ + ローダー抽象化 + DuckDB格納 | 2〜3年分が再現可能に引ける |
+| **P-0** | 中間スキーマ + ローダー抽象化 + DuckDB格納 | 2〜3年分を取り込み、`012-data-quality.md` の `fail` が0件（`D-040`）。同じキャッシュからの再取り込みが `fetched_at` を除いて一致する（`R-021`） |
 | **P-1** | 特徴量パイプライン + **リーク検査テスト** | 発走時点情報のみをテストで保証 |
 | **P-2** | ベースライン（1番人気ベタ買い / 市場確率） | 基準線のLogLossと回収率が出る |
 | **P-3** | Stage 1 + Stage 2 + walk-forward検証 | 市場確率のLogLossを下回る |

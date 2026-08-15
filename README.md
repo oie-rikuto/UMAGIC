@@ -4,19 +4,17 @@ JRA平地G1に限定した競馬予想モデル。
 
 ## 現在の状態
 
-**構想フェーズ。実装コードはまだ存在しない。**
-
-設計方針は [`docs/`](./docs/) に整理してある。
+**`P-0`（データ基盤）の実装着手直前。** `src/umagic/` はまだ無い。設計方針は [`docs/`](./docs/) に整理してある。
 
 | ドキュメント | 内容 |
 |---|---|
-| [`docs/requirements.md`](./docs/requirements.md) | 満たすべき要件（R-xxx）。**まだ無い** |
-| [`docs/decisions.md`](./docs/decisions.md) | 確定した設計判断とその根拠（D-001〜D-022） |
+| [`docs/requirements.md`](./docs/requirements.md) | 満たすべき要件（R-001〜R-028） |
+| [`docs/decisions.md`](./docs/decisions.md) | 確定した設計判断とその根拠（D-001〜D-046） |
 | [`docs/domain-knowledge.md`](./docs/domain-knowledge.md) | プロの予想プロセスの形式化・特徴量カタログ |
 | [`docs/architecture.md`](./docs/architecture.md) | システム構成・スキーマ・評価設計・Phase計画 |
-| [`docs/open-questions.md`](./docs/open-questions.md) | 未決事項（Q-001〜Q-017） |
-| [`docs/spec/`](./docs/spec/) | 実装仕様書（今後追加） |
-| [`docs/tasks.md`](./docs/tasks.md) | 実作業と完了条件。**まだ無い** |
+| [`docs/open-questions.md`](./docs/open-questions.md) | 未決事項（Q-001〜Q-026） |
+| [`docs/spec/`](./docs/spec/) | 実装仕様書（`001` / `002` / `012` が Draft） |
+| [`docs/tasks.md`](./docs/tasks.md) | 実作業と完了条件（現在は `P-0` の20タスク） |
 
 初めて読む場合は [`docs/README.md`](./docs/README.md) から。
 
@@ -27,7 +25,16 @@ JRA平地G1に限定した競馬予想モデル。
 - **学習範囲**: JRA全レース（約90万行）で学習し、G1に特化させる。G1のみでは約7,700行しかないため
 - **モデル**: レース質予測 → 適性照合 の2段階構成。プロの「レースを先に、馬を後に見る」思考を写したもの
 - **成果物**: CLI + バックテストレポート
+- **スタック**: Python 3.12+ / Polars / DuckDB / LightGBM / uv（`D-042`）
 
 ## 次のアクション
 
-`docs/open-questions.md` の **Q-011（必要なデータ項目が実際に取得できるか）** が着手のブロッカー。実データを引いて確認するまで、設計の前提が検証されていない。
+**着手のブロッカーは無い。** `Q-001`（利用規約）は `D-014`、`Q-011`（データ取得可否）は `D-023` で解決済み。
+
+[`docs/tasks.md`](./docs/tasks.md) の `P-0` を上から進める。最初のタスクは uv でのプロジェクト初期化。完了条件は「2〜3年分を取り込んで品質検査の `fail` が0件」（`D-040`）。
+
+残っている制約:
+
+- `D-014` は個人利用・再配布しない・レート制限とキャッシュの実装を条件としている
+- `Q-018`: 複勝・ワイドの過去発走前オッズは取得経路が見つかっていない
+- `Q-026`: 受け入れケースのうち2レース（直線競走・同着）のページが未取得

@@ -42,8 +42,10 @@ paths: docs/**
 採番の前に既存の最大値を確認する。
 
 ```bash
-grep -h '^## [DQR]-' docs/decisions.md docs/open-questions.md docs/requirements.md
+grep -hE '^#{2,3} [DQR]-' docs/decisions.md docs/open-questions.md docs/requirements.md
 ```
+
+**見出しレベルはファイルによって違う。** `decisions.md` と `open-questions.md` は `## D-xxx` / `## Q-xxx` だが、`requirements.md` は `## 1. スコープと出力` のような区分の下に `### R-xxx` を置く。`^## ` だけを見る grep は R を1件も拾わず、**既存の要件が無いように見えて採番が衝突する。**
 
 ## 要件の書き方（`requirements.md`）
 
@@ -59,10 +61,10 @@ grep -h '^## [DQR]-' docs/decisions.md docs/open-questions.md docs/requirements.
 
 多くの要件は既存の `D-xxx` から導出できる（`D-002` `D-008` `D-015` など）。ヒアリングの主目的は、**決定になっていない暗黙の要件を掘り出すこと**。
 
-書式：
+書式：区分の見出し（`## 1. スコープと出力`）の下に置く。
 
 ```markdown
-## R-001 <一文で書いた要件>
+### R-001 <一文で書いた要件>
 
 **区分**: 機能 / 品質 / 制約
 **判定方法**: どうやって満たされたと確認するか

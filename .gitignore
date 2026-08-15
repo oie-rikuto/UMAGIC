@@ -1,0 +1,17 @@
+# Python（D-042: Python 3.12+ / uv）
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# 取得した生データとキャッシュはコミットしない（R-017 / D-014 条件1: 再配布しない）
+data/
+cache/
+*.duckdb
+*.duckdb.wal
+*.html.gz
+
+# 生成物
+reports/

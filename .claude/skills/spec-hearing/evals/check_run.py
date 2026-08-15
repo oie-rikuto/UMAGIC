@@ -60,7 +60,9 @@ def main(root: Path):
 
     for name in spec_files:
         text = (spec_dir / name).read_text(encoding="utf-8")
-        body = re.split(r"^##\s", text, maxsplit=1)[-1]  # ヘッダ表以降
+        # ヘッダ表以降。re.M が無いと ^ が先頭にしか掛からず、仕様書は
+        # "# NNN <title>" で始まるため一度も一致せず、body が全文になる
+        body = re.split(r"^##\s", text, maxsplit=1, flags=re.M)[-1]
         out["specs"][name] = {
             "lines": text.count("\n") + 1,
             "refs_D": sorted(ids_in(text, "D")),
