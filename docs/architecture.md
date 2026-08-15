@@ -62,7 +62,8 @@ races    race_id, date, course, race_number, post_time,
 
 runners  race_id, horse_id, frame, number, jockey_id, trainer_id,
          weight_carried, horse_weight, weight_diff, age, sex,
-         odds_win, popularity, status, finish_pos, time, last_3f, corners
+         odds_win, popularity, status, finish_pos, arrival_pos,
+         time, last_3f, corners
 
 horses   horse_id, name, birth, sire_id, dam_id, damsire_id
 
@@ -80,7 +81,20 @@ odds     race_id, bet_type, combination, odds_low, odds_high, as_of
 - `runners.corners` はコーナー通過順の配列。`F-101`（逃げ意欲）と `F-501`（当日の脚質バイアス）の両方が依存する。**要素数はレースによって変動する**（コーナー数が距離で変わるため）。`F-101` は1〜2角を要求するので、要素数が足りないレースは入力なしとして扱い、3角・4角で代用しない。
 - ラップタイムは `races` に別テーブルとして持つ（Stage 1の目的変数になるため）。
 - `race_number` / `post_time` は同日レースの前後判定に使う（`D-010`）。次項の規約に従うこと。
-- `status` は出走状態（`D-011`）。`n_entries`（出馬表頭数）と `n_starters`（実出走頭数）を分けて持つ（`D-012`）。
+- `status` は出走状態（`D-011`）。`n_entries`（出馬表頭数）と `n_starters`（実出走頭数）を分けて持つ（`D-012`）。**`status` の2つの軸を混同しないこと。**
+
+  | `status` | ゲートを出たか | 返還 | `n_starters` に数える |
+  |---|---|---|---|
+  | 出走 | 出た | なし | 数える |
+  | 競走中止 | 出た | **なし** | **数える** |
+  | 失格 | 出た | なし | 数える |
+  | 降着 | 出た | なし | 数える |
+  | 出走取消 | 出ていない | **あり** | 数えない |
+  | 競走除外 | 出ていない | **あり** | 数えない |
+
+  **`n_starters` は「着順が付いた馬の数」ではない。** 競走中止・失格の馬はゲートを出ているので `n_starters` に含まれるが着順は付かない。`D-023` で取得した日本ダービー2023（`202305021211`）は18頭立てで、うち1頭が競走中止のため着順が付いた馬は17頭である。
+
+- **`finish_pos` と `arrival_pos` を分ける（`D-033`）。** 降着では両者が乖離する。払戻・回収率は `finish_pos`、過去走集計による能力推定は `arrival_pos` を使う。**同着があるため `finish_pos` に一意制約を張らないこと。**
 - **`odds` を省略しないこと（`D-020`）。** `runners.odds_win` は単勝しか持たず、`payouts` は的中組の払戻しか持たない。`D-008` が主評価に選んだ複勝・ワイドの**発走前オッズ**がないと `P-4` の期待値計算が成立しない。複勝・ワイドは的中組数で配当が変わるため `odds_low` / `odds_high` の幅で保持する。単勝は全件取得可能だが、**複勝・ワイドは過去分の全頭オッズが取得できない**ことが判明している（`D-023` / `Q-018`）。
 - **`weather` と `weather_forecast` を混ぜないこと（`D-029`）。** `weather` は実測（当日確定）、`weather_forecast` は予報（木曜時点で入手）。暫定予測は予報値、本命予測は実測値を使う。同じ列に入れると本命予測にリークする。**過去分の予報値は取得できない**ため、既存データの `weather_forecast` は `NULL` になる（`Q-021`）。馬場状態には対応する予報列を置いていない（事前情報の有無が未確認）。
 - **`source` / `fetched_at` を全テーブルに持つ（`D-026`）。** 合流するソースが3系統（`netkeiba_jra` / `netkeiba_nar` / `jrdb`）あり、出所がないと同じ列に別ソース由来の値が混在しても区別できない。`fetched_at` はレース当日に複数回の増分取得を回す（`D-024`）ため、どの断面かを識別するのに要る。
