@@ -1,6 +1,6 @@
 # 実装仕様書
 
-`001-schema.md` と `002-loader.md` が存在する（いずれも `Draft`）。以降は着手する Phase の分だけ追加する。
+`001-schema.md` / `002-loader.md` / `012-data-quality.md` が存在する（いずれも `Draft`）。以降は着手する Phase の分だけ追加する。
 
 ## 位置づけ
 
