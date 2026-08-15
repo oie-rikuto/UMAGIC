@@ -57,7 +57,8 @@ JRA全体なら年間約3,450競走・約4.5万出走、20年で約90万行。�
 ```
 races    race_id, date, course, race_number, post_time,
          distance, surface, direction, grade,
-         track_condition, weather, n_entries, n_starters, prize
+         track_condition, weather, weather_forecast,
+         n_entries, n_starters, prize
 
 runners  race_id, horse_id, frame, number, jockey_id, trainer_id,
          weight_carried, horse_weight, weight_diff, age, sex,
@@ -68,6 +69,9 @@ horses   horse_id, name, birth, sire_id, dam_id, damsire_id
 payouts  race_id, bet_type, combination, payout
 
 odds     race_id, bet_type, combination, odds_low, odds_high, as_of
+
+# 全テーブル共通（D-026）
+         source, fetched_at
 ```
 
 ### 注意点
@@ -77,7 +81,9 @@ odds     race_id, bet_type, combination, odds_low, odds_high, as_of
 - ラップタイムは `races` に別テーブルとして持つ（Stage 1の目的変数になるため）。
 - `race_number` / `post_time` は同日レースの前後判定に使う（`D-010`）。次項の規約に従うこと。
 - `status` は出走状態（`D-011`）。`n_entries`（出馬表頭数）と `n_starters`（実出走頭数）を分けて持つ（`D-012`）。
-- **`odds` を省略しないこと（`D-020`）。** `runners.odds_win` は単勝しか持たず、`payouts` は的中組の払戻しか持たない。`D-008` が主評価に選んだ複勝・ワイドの**発走前オッズ**がないと `P-4` の期待値計算が成立しない。複勝・ワイドは的中組数で配当が変わるため `odds_low` / `odds_high` の幅で保持する。取得可否は未確認（`Q-011`）。
+- **`odds` を省略しないこと（`D-020`）。** `runners.odds_win` は単勝しか持たず、`payouts` は的中組の払戻しか持たない。`D-008` が主評価に選んだ複勝・ワイドの**発走前オッズ**がないと `P-4` の期待値計算が成立しない。複勝・ワイドは的中組数で配当が変わるため `odds_low` / `odds_high` の幅で保持する。単勝は全件取得可能だが、**複勝・ワイドは過去分の全頭オッズが取得できない**ことが判明している（`D-023` / `Q-018`）。
+- **`weather` と `weather_forecast` を混ぜないこと（`D-029`）。** `weather` は実測（当日確定）、`weather_forecast` は予報（木曜時点で入手）。暫定予測は予報値、本命予測は実測値を使う。同じ列に入れると本命予測にリークする。**過去分の予報値は取得できない**ため、既存データの `weather_forecast` は `NULL` になる（`Q-021`）。馬場状態には対応する予報列を置いていない（事前情報の有無が未確認）。
+- **`source` / `fetched_at` を全テーブルに持つ（`D-026`）。** 合流するソースが3系統（`netkeiba_jra` / `netkeiba_nar` / `jrdb`）あり、出所がないと同じ列に別ソース由来の値が混在しても区別できない。`fetched_at` はレース当日に複数回の増分取得を回す（`D-024`）ため、どの断面かを識別するのに要る。
 
 ### 同日レースの前後判定（`D-010`）
 
@@ -111,7 +117,7 @@ pre_race      race_id, horse_id, body_weight, condition_note
 
 ```
 Stage 1  レース質予測モデル（レース単位）
-   入力: 出走馬の脚質分布(F-101), 頭数, 距離, コース, 馬場, 天候
+   入力: 出走馬の脚質分布(F-101), 頭数, 距離, コース, 馬場・天候(F-804)
    出力: 前半3F/5Fタイム, 後半3F, ペース指数（前後半バランス）
               ↓ 予測されたレース質 (F-102)
 Stage 2  適性照合モデル（馬単位）
@@ -124,6 +130,17 @@ Stage 2  適性照合モデル（馬単位）
               ↓
 期待値    確率 × オッズ → EV → 分数ケリーで賭け金決定
 ```
+
+### 予測経路ごとの入力（`D-028`）
+
+入力は特徴量の**確定時刻**で決まる。名指しで列挙しない。一覧は `domain-knowledge.md` 4節。
+
+| 経路 | 使える特徴量 |
+|---|---|
+| 暫定予測（木曜） | 確定時刻が `木曜` 以前 |
+| 本命予測（当日） | 確定時刻が `T-15` 以前 |
+
+**`F-102` は `F-804`（当日の天候・馬場状態）を入力に含むため当日確定であり、`F-104` もこれに従う。** つまり暫定予測では Stage 1 の出力が馬場状態なしで推定され、Stage 2 の中核特徴量が劣化する。天候については予報値で部分的に埋める（`D-029`）が、**過去分の予報値が存在しないためバックテストでは埋まらない**（`Q-021`）。
 
 ### `F-901` の適用範囲（`D-021`）
 
