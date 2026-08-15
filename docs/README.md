@@ -16,7 +16,7 @@ JRA平地G1に限定した競馬予想モデルの設計ドキュメント群。
 | [`architecture.md`](./architecture.md) | システム構成・スキーマ・Phase計画・評価設計 | 全体像を掴む人 |
 | [`open-questions.md`](./open-questions.md) | 未決事項と、決めるために必要な情報 | 次に判断する人 |
 | [`spec/`](./spec/) | **実装仕様書（今後追加）** | 実装する人 |
-| [`tasks.md`](./tasks.md) | 実作業と完了条件。**まだ無い** | 手を動かす人 |
+| [`tasks.md`](./tasks.md) | 実作業と完了条件（現在は `P-0` のみ） | 手を動かす人 |
 
 `design.md` は作らない（`D-019`）。設計は `architecture.md`（全体）と `spec/`（モジュール単位）が担う。
 

@@ -20,7 +20,7 @@ JRA平地G1（年24競走前後）に限定した競馬予想モデル。出走�
 | `docs/architecture.md` | 構成・スキーマ・評価設計・Phase計画（`P-x`） |
 | `docs/open-questions.md` | 未決事項（`Q-xxx`） |
 | `docs/spec/` | 実装仕様書。**まだ空** |
-| `docs/tasks.md` | 実作業と完了条件。**まだ無い** |
+| `docs/tasks.md` | 実作業と完了条件（現在は `P-0` のみ） |
 | `.claude/skills/spec-hearing/` | 要件・仕様のヒアリング用スキル |
 | `.claude/skills/task-breakdown/` | タスク分解用スキル |
 | `tools/q011_feasibility/` | `Q-011` 確認用の使い捨てスパイク。`src/umagic/` の一部ではない |
