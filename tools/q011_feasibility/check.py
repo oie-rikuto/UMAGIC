@@ -35,9 +35,17 @@ from urllib.parse import urlsplit
 UA = "UMAGIC-feasibility-check/0.1 (personal research; contact: repository owner)"
 
 # 未検証。記事由来の候補であり、実際に叩いて確かめるのがこのスクリプトの目的。
+#
+# 1回目の実行で判明: race.netkeiba.com は近年のレースにしか実データを返さない。
+# 20年前のレース（例: 200605050810）に対しては、着順表・ラップとも空のテンプレート
+# （<title>が空、着順テーブルなし）を返す。過去レースの一次アーカイブは
+# db.netkeiba.com/race/{rid}/ 側にあり、そちらにはラップタイム・コーナー通過順位・
+# 着順表・払戻表が実在することを目視で確認済み（2005年・2006年ジャパンカップ）。
+# よって archive を probe 対象に追加する。
 PAGES = {
     "shutuba": "https://race.netkeiba.com/race/shutuba.html?race_id={rid}",
     "result": "https://race.netkeiba.com/race/result.html?race_id={rid}",
+    "archive": "https://db.netkeiba.com/race/{rid}/",
 }
 
 # 設計が依存している項目。keywords はどれか1つでも出れば「手掛かりあり」。
