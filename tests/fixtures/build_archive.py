@@ -19,7 +19,7 @@ RACE_HEADER_TMPL = """
 <dd>
 <h1>{title}</h1>
 <p><span>
-{surface_text}{distance}m&nbsp;/&nbsp;
+{dist_token}&nbsp;/&nbsp;
 天候 : {weather}&nbsp;/&nbsp;
 {surface_label} : {track_condition}&nbsp;&nbsp;/&nbsp;
 発走 : {post_time}
@@ -74,6 +74,7 @@ def build_archive_html(
     date_y: int, date_m: int, date_d: int,
     course: str = "東京", race_number: int = 11, title: str = "テストレース",
     surface: str = "芝", direction: str = "左", distance: int = 2000,
+    course_shape: str = "",   # 「 外」「 外-内」など。実ページの表記を再現する
     weather: str = "晴", track_condition: str = "良", post_time: str = "15:40",
     corner_nos: list[int] | None = None,
     runners: list[dict] | None = None,
@@ -84,15 +85,15 @@ def build_archive_html(
 ) -> bytes:
     surface_text = {"芝": "芝", "ダート": "ダ", "障害": "障"}[surface]
     surface_label = "芝" if surface == "芝" else "ダート"
+    # 実ページの距離トークン。例: 芝右2000m / 芝右 外-内3200m / 障芝 ダート2910m
+    dist_token = f"{surface_text}{direction or ''}{course_shape}{distance}m"
 
     header = RACE_HEADER_TMPL.format(
         race_id=race_id, course=course, race_number=race_number, title=title,
-        surface_text=surface_text, distance=distance, weather=weather,
+        dist_token=dist_token, weather=weather,
         surface_label=surface_label, track_condition=track_condition,
         post_time=post_time, date_y=date_y, date_m=date_m, date_d=date_d,
     )
-    if direction:
-        header = header.replace(f"{surface_text}{distance}m", f"{surface_text}{direction}{distance}m")
 
     rows = [TABLE_HEADER]
     for i, r in enumerate(runners or [], start=1):

@@ -168,6 +168,43 @@ def test_10e_unparsable_corner_header():
 
 # --- 直線競走・ダート・方向表記 ----------------------------------------------
 
+@pytest.mark.parametrize("surface,direction,shape,distance,expect", [
+    ("芝", "右", "", 2000, ("芝", "右", 2000)),
+    ("芝", "左", "", 2400, ("芝", "左", 2400)),
+    ("ダート", "右", "", 1800, ("ダート", "右", 1800)),
+    ("芝", "直線", "", 1000, ("芝", "直線", 1000)),
+    # 中山・新潟の外回り
+    ("芝", "右", " 外", 1200, ("芝", "右", 1200)),
+    # 阪神・京都の3200m は外回りから内回りへ入る。`外` か `内` の一方しか
+    # 見ない正規表現では松籟S（202209010609）が読めず取り込みが落ちた
+    ("芝", "右", " 外-内", 3200, ("芝", "右", 3200)),
+])
+def test_distance_notations(surface, direction, shape, distance, expect):
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              surface=surface, direction=direction,
+                              course_shape=shape, distance=distance,
+                              corner_nos=[1, 2, 3, 4],
+                              runners=[_runner(passage="1-1-1-1")])
+    r = parse_archive(_page(html)).race
+    assert (r["surface"], r["direction"], r["distance"]) == expect
+
+
+def test_jump_race_distance_is_not_parsed():
+    """D-025 / D-047: 障害は day_index で除外するが、すり抜けてもここで読めない。
+
+    表記「障芝 ダート2910m」は `芝` も `ダ` も内側に含むため、部分一致では
+    誤って拾ってしまう。読めてしまうと `surface='芝'` の平地レースとして
+    静かに学習データへ混入する。
+    """
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              surface="障害", direction="", course_shape="芝 ダート",
+                              distance=2910, corner_nos=[1, 2, 3, 4],
+                              runners=[_runner(passage="1-1-1-1")])
+    r = parse_archive(_page(html)).race
+    assert r["distance"] is None
+    assert r["surface"] is None
+
+
 def test_dirt_and_direction_parsed():
     html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
                               surface="ダート", direction="左", distance=1600,
