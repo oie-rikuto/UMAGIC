@@ -178,6 +178,9 @@ def test_10e_unparsable_corner_header():
     # 阪神・京都の3200m は外回りから内回りへ入る。`外` か `内` の一方しか
     # 見ない正規表現では松籟S（202209010609）が読めず取り込みが落ちた
     ("芝", "右", " 外-内", 3200, ("芝", "右", 3200)),
+    # 中山3600m は1周が短く2周する。「距離の直前は数字以外」という前提が
+    # 周回数の "2" で破れ、ステイヤーズS（202206050111）が読めず落ちた
+    ("芝", "右", " 内2周", 3600, ("芝", "右", 3600)),
 ])
 def test_distance_notations(surface, direction, shape, distance, expect):
     html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
