@@ -329,3 +329,119 @@ def test_list_race_keys_excludes_jump_races():
 def test_list_race_keys_no_central_section():
     body = "<html><body>no races today</body></html>".encode("utf-8")
     assert list_race_keys(_page(body, page_kind="day_index")) == []
+
+
+# --- D-049: smalltxt / 所属 -------------------------------------------------
+
+@pytest.mark.parametrize("cond,expect_class,expect_rule", [
+    ("3歳オープン  (国際) 牡・牝(指)(定量)", "オープン", "定量"),
+    ("4歳以上1勝クラス  (混)[指](ハンデ)", "1勝クラス", "ハンデ"),
+    ("3歳未勝利  (混)[指](馬齢)", "未勝利", "馬齢"),
+    ("2歳新馬  (混)(馬齢)", "新馬", "馬齢"),
+    ("3歳以上2勝クラス  (混)(特指)(定量)", "2勝クラス", "定量"),
+    ("4歳以上3勝クラス  (混)(ハンデ)", "3勝クラス", "ハンデ"),
+    ("3歳以上オープン  (国際)(特指)(別定)", "オープン", "別定"),
+])
+def test_3c_smalltxt_class_and_weight_rule(cond, expect_class, expect_rule):
+    """年齢条件が前置されるため、部分一致でクラスを採る（D-049）。"""
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              corner_nos=[1, 2, 3, 4], smalltxt_cond=cond,
+                              runners=[_runner(passage="1-1-1-1")])
+    r = parse_archive(_page(html)).race
+    assert r["race_class"] == expect_class
+    assert r["weight_rule"] == expect_rule
+
+
+def test_3d_meeting_no_and_day():
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              course="中山", meeting_no=2, meeting_day=12,
+                              corner_nos=[1, 2, 3, 4],
+                              runners=[_runner(passage="1-1-1-1")])
+    r = parse_archive(_page(html)).race
+    assert (r["meeting_no"], r["meeting_day"]) == (2, 12)
+
+
+def test_3e_affiliation_parsed():
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              corner_nos=[1, 2, 3, 4],
+                              runners=[_runner(passage="1-1-1-1", affiliation="[西]")])
+    pr = parse_archive(_page(html))
+    assert pr.runners[0]["affiliation"] == "西"
+
+
+def test_affiliation_absent_is_null():
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              corner_nos=[1, 2, 3, 4],
+                              runners=[_runner(passage="1-1-1-1", affiliation="")])
+    pr = parse_archive(_page(html))
+    assert pr.runners[0]["affiliation"] is None
+
+
+def test_unknown_race_class_recorded_but_race_kept():
+    """D-049: クラスが対応表に無くてもレースは取り込み、rejected_rows に残す。"""
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              corner_nos=[1, 2, 3, 4],
+                              smalltxt_cond="3歳4勝クラス  (混)(定量)",
+                              runners=[_runner(passage="1-1-1-1")])
+    pr = parse_archive(_page(html))
+    assert pr.race["race_class"] is None
+    assert pr.race["weight_rule"] == "定量"      # 斤量条件は取れる
+    assert len(pr.runners) == 1                   # 行は捨てない
+    assert any(r.reason == "unknown_race_class" for r in pr.rejected)
+
+
+# --- D-050: 血統 -------------------------------------------------------------
+
+def _ped_html(pairs):
+    """(rowspan, horse_key) の並びから血統表を組み立てる。"""
+    cells = "".join(
+        f'<td rowspan="{rs}" class="b_ml"><a href="https://db.netkeiba.com/horse/{k}/">馬{k}</a></td>'
+        for rs, k in pairs
+    )
+    return ('<html><head><meta charset="utf-8"></head><body>'
+            f'<table class="blood_table detail"><tr>{cells}</tr></table>'
+            "</body></html>").encode("utf-8")
+
+
+def _ped_page(body, key="2020103532"):
+    return RawPage(source="netkeiba_jra", page_kind="horse_ped", source_key=key,
+                   url="x", body=body, encoding="unknown",
+                   fetched_at=FETCHED_AT, from_cache=False)
+
+
+def test_pedigree_extracts_sire_dam_damsire():
+    """1つ目の rowspan=16 が父、2つ目が母、母の後の最初の rowspan=8 が母父。"""
+    from umagic.sources.netkeiba import parse_pedigree
+    body = _ped_html([
+        (16, "SIRE"), (8, "SIRE_S"), (4, "x1"), (2, "x2"),   # 父系
+        (16, "DAM"), (8, "DAMSIRE"), (4, "y1"), (2, "y2"),   # 母系
+    ])
+    ped = parse_pedigree(_ped_page(body))
+    assert ped["sire_key"] == "SIRE"
+    assert ped["dam_key"] == "DAM"
+    assert ped["damsire_key"] == "DAMSIRE"
+
+
+def test_pedigree_damsire_taken_after_dam_not_before():
+    """父側にも rowspan=8 があるため、母より前のものを拾ってはならない。"""
+    from umagic.sources.netkeiba import parse_pedigree
+    body = _ped_html([(16, "SIRE"), (8, "父の父"), (16, "DAM"), (8, "母の父")])
+    ped = parse_pedigree(_ped_page(body))
+    assert ped["damsire_key"] == "母の父"
+
+
+def test_pedigree_missing_table_returns_nulls():
+    """D-050: 解釈できなければ推測で補わず None を返す。"""
+    from umagic.sources.netkeiba import parse_pedigree
+    body = b'<html><head><meta charset="utf-8"></head><body>no pedigree</body></html>'
+    ped = parse_pedigree(_ped_page(body))
+    assert ped["sire_key"] is None and ped["dam_key"] is None and ped["damsire_key"] is None
+
+
+def test_pedigree_foreign_ancestor_key():
+    """外国産の先祖は 000a001fb6 のような非数値キーを持つ。"""
+    from umagic.sources.netkeiba import parse_pedigree
+    body = _ped_html([(16, "2012104668"), (8, "000a001fb6"), (16, "2014106097"), (8, "1998101554")])
+    ped = parse_pedigree(_ped_page(body))
+    assert ped["sire_key"] == "2012104668"
+    assert ped["damsire_key"] == "1998101554"

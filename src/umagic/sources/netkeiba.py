@@ -24,6 +24,7 @@ PAGES: dict[PageKind, str] = {
     "day_index": "https://db.netkeiba.com/race/list/{key}/",
     "archive": "https://db.netkeiba.com/race/{key}/",
     "shutuba": "https://race.netkeiba.com/race/shutuba.html?race_id={key}",
+    "horse_ped": "https://db.netkeiba.com/horse/ped/{key}/",
 }
 
 # JRA競馬場コード（01〜10）。地方競馬場は対象外（D-025 / D-005）
@@ -153,12 +154,51 @@ def _parse_header(text: str, race_id: int) -> dict:
     race_date = date(int(date_m.group(1)), int(date_m.group(2)), int(date_m.group(3))) \
         if date_m else None
 
+    smalltxt_m = re.search(r'<p class="smalltxt">(.*?)</p>', text, re.S)
+    smalltxt = (re.sub(r"\s+", " ",
+                       html.unescape(re.sub(r"<.*?>", "", smalltxt_m.group(1))).replace("\xa0", " "))
+                .strip() if smalltxt_m else "")
+    race_class, weight_rule, meeting_no, meeting_day, class_unparsed = _parse_smalltxt(smalltxt)
+
     return {
         "course": course, "race_number": race_number, "grade": grade,
         "surface": surface, "direction": direction, "distance": distance,
         "weather": weather, "track_condition": track_condition,
         "post_time": post_time, "date": race_date,
+        "race_class": race_class, "weight_rule": weight_rule,
+        "meeting_no": meeting_no, "meeting_day": meeting_day,
+        "class_unparsed": class_unparsed, "smalltxt": smalltxt,
     }
+
+
+# D-049: smalltxt の第2トークンが開催、第3トークン以降が条件。
+#   例: "2023年05月28日 2回東京12日目 3歳オープン (国際) 牡・牝(指)(定量)"
+# 保存済み3,606ページで下記の語彙に閉じることを確認した（2026-08-17）。
+_RACE_CLASSES = ("新馬", "未勝利", "1勝クラス", "2勝クラス", "3勝クラス", "オープン")
+_WEIGHT_RULES = ("馬齢", "定量", "別定", "ハンデ")
+_MEETING_RE = re.compile(r"(\d+)回\D+?(\d+)日目")
+
+
+def _parse_smalltxt(s: str) -> tuple[str | None, str | None, int | None, int | None, bool]:
+    """smalltxt から (race_class, weight_rule, meeting_no, meeting_day, 解釈失敗) を返す。"""
+    if not s:
+        return None, None, None, None, False
+
+    parts = s.split()
+    meeting_no = meeting_day = None
+    if len(parts) >= 2:
+        m = _MEETING_RE.match(parts[1])
+        if m:
+            meeting_no, meeting_day = int(m.group(1)), int(m.group(2))
+
+    # 条件部（第3トークン以降）。年齢条件が前置されるので部分一致で探す
+    cond = " ".join(parts[2:])
+    race_class = next((c for c in _RACE_CLASSES if c in cond), None)
+    weight_rule = next((w for w in _WEIGHT_RULES if w in cond), None)
+
+    # 条件部があるのにクラスが取れない場合だけ失敗として扱う
+    class_unparsed = bool(cond) and race_class is None
+    return race_class, weight_rule, meeting_no, meeting_day, class_unparsed
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +268,15 @@ def _parse_time_sec(raw: str) -> float | None:
     if m:
         return round(int(m.group(1)) * 60 + float(m.group(2)), 1)
     return None
+
+
+# D-049: 調教師欄の先頭マーカー。F-703 の遠征判定に使う
+_AFFILIATION_RE = re.compile(r"\[([東西地外])\]")
+
+
+def _parse_affiliation(cell_html: str) -> str | None:
+    m = _AFFILIATION_RE.search(cell_html)
+    return m.group(1) if m else None
 
 
 def _parse_id_link(cell_html: str) -> str | None:
@@ -323,6 +372,8 @@ def _parse_finish_table(
             "status": status, "finish_pos": finish_pos,
             "margin": cells[idx["着差"]] if idx.get("着差", -1) >= 0 and cells[idx["着差"]] else None,
             "time_sec": time_sec, "last_3f": last_3f, "corners": corners,
+            "affiliation": (_parse_affiliation(tds[idx["調教師"]])
+                            if "調教師" in idx else None),
             "fetched_at": fetched_at,
         })
 
@@ -439,8 +490,20 @@ def parse_archive(page: RawPage) -> ParsedRace:
         "n_starters": n_starters,
         "prize": prize,
         "corner_nos": corner_nos,
+        "race_class": header["race_class"],
+        "weight_rule": header["weight_rule"],
+        "meeting_no": header["meeting_no"],
+        "meeting_day": header["meeting_day"],
         "fetched_at": fetched_at,
     }
+
+    # D-049: クラスが対応表に無い場合はレースを取り込んだうえで記録する。
+    # 行は捨てない
+    if header["class_unparsed"]:
+        rejected.append(RejectedRow(
+            source_key=str(race_id), row_ref=None,
+            reason="unknown_race_class", raw=header["smalltxt"][:200],
+        ))
 
     payouts = _parse_payouts(text, race_id, fetched_at)
     laps = _parse_laps(text, race_id, fetched_at)
@@ -477,3 +540,46 @@ class NetkeibaJraSource:
                 f"page_kind={page.page_kind} のパースは P-0 の対象外（shutuba は未実装）"
             )
         return parse_archive(page)
+
+
+# ---------------------------------------------------------------------------
+# horse_ped: 血統（D-050）
+# ---------------------------------------------------------------------------
+
+# 5代血統表は rowspan で世代を表す。父は 16 行、母も 16 行、母父は 8 行を占める。
+# 実物（タスティエーラ 2020103532）で確認済み: 父サトノクラウン / 母パルティトゥーラ
+# / 母父マンハッタンカフェ（2026-08-17）
+_PED_CELL_RE = re.compile(r'<td[^>]*?rowspan="(\d+)"[^>]*>(.*?)</td>', re.S)
+_PED_LINK_RE = re.compile(r'href="[^"]*?/horse/(\w+)/?"')
+
+
+def parse_pedigree(page: RawPage) -> dict:
+    """`horse_ped` ページから父・母・母父の source_key を採る。
+
+    戻り値の3キーはいずれも取れなければ `None`。**推測で補わない**（`D-050`）。
+    """
+    text = decode_best(page.body, page.encoding if page.encoding != "unknown" else None)
+    text = _STRIP_RE.sub(" ", text)
+
+    m = re.search(r'<table[^>]*class="blood_table detail"[^>]*>(.*?)</table>', text, re.S)
+    if not m:
+        return {"horse_source_key": page.source_key,
+                "sire_key": None, "dam_key": None, "damsire_key": None}
+
+    cells: list[tuple[int, str]] = []
+    for cm in _PED_CELL_RE.finditer(m.group(1)):
+        link = _PED_LINK_RE.search(cm.group(2))
+        if link:
+            cells.append((int(cm.group(1)), link.group(1)))
+
+    gen1 = [c for c in cells if c[0] == 16]
+    sire_key = gen1[0][1] if len(gen1) >= 1 else None
+    dam_key = gen1[1][1] if len(gen1) >= 2 else None
+
+    damsire_key = None
+    if dam_key is not None:
+        i = cells.index(gen1[1])
+        damsire_key = next((c[1] for c in cells[i + 1:] if c[0] == 8), None)
+
+    return {"horse_source_key": page.source_key, "sire_key": sire_key,
+            "dam_key": dam_key, "damsire_key": damsire_key}

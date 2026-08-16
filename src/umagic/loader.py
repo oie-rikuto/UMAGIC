@@ -58,13 +58,16 @@ def _write_race(conn: duckdb.DuckDBPyConnection, source: str, parsed: ParsedRace
         """
         INSERT INTO races (race_id, date, course, race_number, post_time, distance,
             surface, direction, grade, track_condition, weather, weather_forecast,
-            n_entries, n_starters, prize, corner_nos, source, fetched_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            n_entries, n_starters, prize, corner_nos,
+            race_class, weight_rule, meeting_no, meeting_day, source, fetched_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [race_id, race["date"], race["course"], race["race_number"], race["post_time"],
          race["distance"], race["surface"], race["direction"], race["grade"],
          race["track_condition"], race["weather"], race["weather_forecast"],
          race["n_entries"], race["n_starters"], race["prize"], race["corner_nos"],
+         race.get("race_class"), race.get("weight_rule"),
+         race.get("meeting_no"), race.get("meeting_day"),
          source, fetched_at],
     )
 
@@ -84,13 +87,15 @@ def _write_race(conn: duckdb.DuckDBPyConnection, source: str, parsed: ParsedRace
             """
             INSERT INTO runners (race_id, horse_id, number, frame, jockey_id, trainer_id,
                 weight_carried, horse_weight, weight_diff, age, sex, odds_win, popularity,
-                status, finish_pos, margin, time_sec, last_3f, corners, source, fetched_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                status, finish_pos, margin, time_sec, last_3f, corners, affiliation,
+                source, fetched_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [race_id, horse_id, r["number"], r["frame"], jockey_id, trainer_id,
              r["weight_carried"], r["horse_weight"], r["weight_diff"], r["age"], r["sex"],
              r["odds_win"], r["popularity"], r["status"], r["finish_pos"], r["margin"],
-             r["time_sec"], r["last_3f"], r["corners"], source, r["fetched_at"]],
+             r["time_sec"], r["last_3f"], r["corners"], r.get("affiliation"),
+             source, r["fetched_at"]],
         )
 
     for p in parsed.payouts:

@@ -57,6 +57,10 @@ DDL_STATEMENTS: list[str] = [
         n_starters        SMALLINT  NOT NULL,
         prize             BIGINT,
         corner_nos        SMALLINT[],
+        race_class        VARCHAR,
+        weight_rule       VARCHAR,
+        meeting_no        SMALLINT,
+        meeting_day       SMALLINT,
         source            VARCHAR   NOT NULL,
         fetched_at        TIMESTAMP NOT NULL,
         UNIQUE (date, course, race_number),
@@ -67,7 +71,12 @@ DDL_STATEMENTS: list[str] = [
         CHECK (surface IN ('芝', 'ダート', '障害')),
         CHECK (direction IS NULL OR direction IN ('右', '左', '直線')),
         CHECK (track_condition IS NULL
-               OR track_condition IN ('良', '稍重', '重', '不良'))
+               OR track_condition IN ('良', '稍重', '重', '不良')),
+        CHECK (race_class IS NULL OR race_class IN
+               ('新馬', '未勝利', '1勝クラス', '2勝クラス', '3勝クラス', 'オープン')),
+        CHECK (weight_rule IS NULL OR weight_rule IN ('馬齢', '定量', '別定', 'ハンデ')),
+        CHECK (meeting_no IS NULL OR meeting_no >= 1),
+        CHECK (meeting_day IS NULL OR meeting_day >= 1)
     )
     """,
     """
@@ -91,13 +100,15 @@ DDL_STATEMENTS: list[str] = [
         time_sec        DECIMAL(6,1),
         last_3f         DECIMAL(4,1),
         corners         SMALLINT[],
+        affiliation     VARCHAR,
         source          VARCHAR   NOT NULL,
         fetched_at      TIMESTAMP NOT NULL,
         PRIMARY KEY (race_id, horse_id),
         UNIQUE (race_id, number),
         CHECK (status IN ('出走', '降着', '競走中止', '失格', '出走取消', '競走除外')),
         CHECK (number >= 1),
-        CHECK (finish_pos IS NULL OR finish_pos >= 1)
+        CHECK (finish_pos IS NULL OR finish_pos >= 1),
+        CHECK (affiliation IS NULL OR affiliation IN ('東', '西', '地', '外'))
     )
     """,
     """

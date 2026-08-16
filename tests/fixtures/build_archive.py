@@ -27,7 +27,7 @@ RACE_HEADER_TMPL = """
 </p>
 </dd>
 </dl>
-<p class="smalltxt">{date_y}年{date_m:02d}月{date_d:02d}日 テスト開催 テストレース</p>
+<p class="smalltxt">{date_y}年{date_m:02d}月{date_d:02d}日 {meeting_no}回{course}{meeting_day}日目 {smalltxt_cond}</p>
 </div></div>
 """
 
@@ -51,7 +51,7 @@ RUNNER_ROW_TMPL = """
 <td>{popularity}</td>
 <td>{horse_weight}</td>
 <td></td><td></td><td></td>
-<td class="txt_l">[東]<a href="/trainer/result/recent/{trainer_key}/" title="t">{trainer_key}</a></td>
+<td class="txt_l">{affiliation}<a href="/trainer/result/recent/{trainer_key}/" title="t">{trainer_key}</a></td>
 <td class="txt_l"><a href="/owner/result/recent/1/" title="o">owner</a></td>
 <td>{prize}</td>
 </tr>
@@ -75,6 +75,9 @@ def build_archive_html(
     course: str = "東京", race_number: int = 11, title: str = "テストレース",
     surface: str = "芝", direction: str = "左", distance: int = 2000,
     course_shape: str = "",   # 「 外」「 外-内」など。実ページの表記を再現する
+    meeting_no: int = 1, meeting_day: int = 1,
+    # smalltxt の条件部。実ページは年齢条件が前置される（D-049）
+    smalltxt_cond: str = "3歳未勝利  (混)[指](馬齢)",
     weather: str = "晴", track_condition: str = "良", post_time: str = "15:40",
     corner_nos: list[int] | None = None,
     runners: list[dict] | None = None,
@@ -91,6 +94,7 @@ def build_archive_html(
     header = RACE_HEADER_TMPL.format(
         race_id=race_id, course=course, race_number=race_number, title=title,
         dist_token=dist_token, weather=weather,
+        meeting_no=meeting_no, meeting_day=meeting_day, smalltxt_cond=smalltxt_cond,
         surface_label=surface_label, track_condition=track_condition,
         post_time=post_time, date_y=date_y, date_m=date_m, date_d=date_d,
     )
@@ -104,7 +108,7 @@ def build_archive_html(
             "name": "馬", "sex_age": "牡3", "weight_carried": "55",
             "jockey_key": "00000", "time": "", "margin": "", "passage": "",
             "last3f": "", "odds": "", "popularity": "", "horse_weight": "",
-            "trainer_key": "00000", "prize": "",
+            "trainer_key": "00000", "prize": "", "affiliation": "[東]",
             **r,
         }))
     finish_table = (
