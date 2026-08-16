@@ -21,7 +21,7 @@ DDL_STATEMENTS: list[str] = [
         detail       VARCHAR,
         fetched_at   TIMESTAMP NOT NULL,
         CHECK (outcome IN ('ok', 'empty', 'http_error', 'parse_error')),
-        CHECK (page_kind IN ('day_index', 'archive', 'shutuba'))
+        CHECK (page_kind IN ('day_index', 'archive', 'shutuba', 'horse_ped'))
     )
     """,
     """
