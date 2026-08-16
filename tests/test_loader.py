@@ -81,7 +81,7 @@ def test_reingest_rejected_rows_do_not_double(conn):
     """再取り込みで rejected_rows が積み上がらない（D-045）。"""
     html = build_archive_html(
         race_id=7, date_y=2023, date_m=1, date_d=1, corner_nos=[1, 2, 3, 4],
-        runners=[{"finish": "取", "number": 1, "passage": ""}],
+        runners=[{"finish": "失", "number": 1, "passage": ""}],  # 未知マーカー（Q-023）
     )
     fetcher = _FixedFetcher(html)
     source = NetkeibaJraSource(fetcher)

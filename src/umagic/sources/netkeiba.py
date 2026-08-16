@@ -190,7 +190,10 @@ def _parse_corner_nos(text: str) -> tuple[list[int] | None, str | None]:
 # archive: 着順テーブル（race_table_01）
 # ---------------------------------------------------------------------------
 
-_STATUS_MAP: dict[str, str] = {"中": "競走中止", "除": "競走除外"}
+# D-048: 出走取消の表記「取」は P-0 の3年分取り込み（2022〜2024年、
+# 137,575出走行）で220件確認した。失格の表記は3年間で1件も観測されず
+# Q-023 に残る
+_STATUS_MAP: dict[str, str] = {"中": "競走中止", "除": "競走除外", "取": "出走取消"}
 
 
 def _cells(row_html: str) -> list[str]:

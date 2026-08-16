@@ -273,11 +273,15 @@ def test_rejected_rate_year_from_source_key(conn):
 
 
 def test_rejected_rate_group_surfaces_unknown_markers(conn):
-    """Q-023: 未知の着順マーカーは `raw` まで内訳に出て、実物が特定できる。"""
+    """Q-023: 未知の着順マーカーは `raw` まで内訳に出て、実物が特定できる。
+
+    `raw` は合成データ（`失` は実際に Q-023 で未確認のまま残る失格の表記。
+    もう一方はグルーピングの区別を確認するための架空の値）。
+    """
     _clean_race(conn, race_id=1, n=1, race_number=1)
-    for reason, raw in (("unknown_finish_marker", "取"),
-                        ("unknown_finish_marker", "取"),
+    for reason, raw in (("unknown_finish_marker", "失"),
                         ("unknown_finish_marker", "失"),
+                        ("unknown_finish_marker", "◆"),
                         ("corners_length_mismatch", "3-2")):
         conn.execute(
             "INSERT INTO rejected_rows VALUES ('netkeiba_jra', '1', '3', ?, ?, ?)",
@@ -285,8 +289,8 @@ def test_rejected_rate_group_surfaces_unknown_markers(conn):
         )
     report = run_quality_checks(conn)
     groups = dict((b, n) for b, n, _ in report.warns["rejected_rate"].by_group)
-    assert groups["unknown_finish_marker (取)"] == 2
-    assert groups["unknown_finish_marker (失)"] == 1
+    assert groups["unknown_finish_marker (失)"] == 2
+    assert groups["unknown_finish_marker (◆)"] == 1
     # 通過順は値が散らばるので理由だけにまとめる
     assert groups["corners_length_mismatch"] == 1
 

@@ -55,13 +55,25 @@ def test_3_scratched_marker():
 
 
 def test_4_unknown_marker_rejected():
+    """失格の表記は Q-023 のとおり3年分の実データでも1件も観測されておらず未確認。"""
     html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
                               corner_nos=[1, 2, 3, 4],
-                              runners=[_runner(finish="取", passage="")])
+                              runners=[_runner(finish="失", passage="")])
     pr = parse_archive(_page(html))
     assert len(pr.runners) == 0
     assert len(pr.rejected) == 1
     assert pr.rejected[0].reason == "unknown_finish_marker"
+
+
+def test_3b_scratched_marker():
+    """D-048: 出走取消は `取` の1文字。P-0 の3年分取り込みで220件確認した。"""
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              corner_nos=[1, 2, 3, 4],
+                              runners=[_runner(finish="取", passage="")])
+    pr = parse_archive(_page(html))
+    assert pr.runners[0]["status"] == "出走取消"
+    assert pr.runners[0]["finish_pos"] is None
+    assert len(pr.rejected) == 0
 
 
 # --- 5〜6: 馬体重 ------------------------------------------------------------
