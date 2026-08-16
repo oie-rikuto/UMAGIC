@@ -29,7 +29,20 @@
 
 - **確定済みレースに `race.netkeiba.com/race/result.html` を使わない。** 年代でも分岐しない
 - `shutuba` から取り込んだ行は、レース確定後に `archive` の値で**上書きする**
-- 由来を保持するため、`fetch_log.page_kind` に `archive` / `shutuba` / `day_index` を記録する。`runners.source` は両方とも `netkeiba_jra` になり区別できない
+- 由来を保持するため、`fetch_log.page_kind` に `archive` / `shutuba` / `day_index` を記録する。`runners.source` は両方とも `netkeiba_jra` になり区別できない。**`day_index` も記録する**。記録しないと、その日のレースを1件も取り込めなかったこと自体が `fetch_incomplete`（`012-data-quality.md`）に現れない
+
+### `day_index` からの列挙
+
+**中央のセクションのみを対象とする。** 同じページに地方競馬が並ぶが、ID体系が異なりスコープ外（`D-025`）。中央セクションの終端は次の見出し（＝地方の開始）。
+
+**障害競走は距離表記で除外する（`D-047`）。** `archive` を引く前に弾く。
+
+| 距離表記 | 扱い |
+|---|---|
+| `芝1600m` / `ダ1400m` | 取り込む |
+| `障2910m` | **除外する。`archive` を引かない** |
+
+競馬場コードが `01`〜`10` 以外の行も除外する（地方競馬場）。
 
 ### インターフェース
 
@@ -253,12 +266,23 @@ ON CONFLICT (url) DO UPDATE SET
 | HTTPエラー | `fetch_log.outcome = 'http_error'` を記録し、**次の `source_key` へ進む** |
 | 空テンプレート（着順テーブルが無い） | `outcome = 'empty'` を記録し、次へ進む |
 | パース例外 | `outcome = 'parse_error'` を記録し、次へ進む |
+| **`day_index` の取得・パース失敗** | `page_kind='day_index'` で `outcome` を記録し、**次の日へ進む**。1日分の失敗で範囲全体を止めない |
+| **`day_index` に中央開催が無い** | `outcome = 'empty'` を記録する。**異常ではない**（平日は大半がこれ） |
+| **書き込み時の制約違反** | `outcome = 'parse_error'` を記録し、次へ進む。パースが不完全だったことの現れとして扱う |
 | 未知の着順マーカー | その**行のみ**棄却して `rejected_rows` に記録。レースの他の行は取り込む |
 | コーナー表の見出しが解釈できない | `corner_nos = NULL` でレースを取り込み、`rejected_rows` に記録。**行は捨てない**（`D-043`） |
 | 通過列の要素数が `corner_nos` と不一致 | `corners = NULL` で行を取り込み、`rejected_rows` に記録（`D-044`） |
 | `robots.txt` が取得を禁止 | **全体を中断する**（`D-014` 条件3） |
 
 `robots.txt` 以外で全体を停止しない。**`db.netkeiba.com` と `race.netkeiba.com` の両方を確認する。** `D-037` により本番の主ソースは `db.netkeiba.com` であり、こちらを確認しない実装は `D-014` 条件3を満たさない。
+
+**「次へ進む」は日次インデックスにも適用する。** 20年分は数万ページ規模（`Q-001` 備考）で、`D-014` 条件2 の5秒間隔では実行が数十時間に及ぶ。この間に一過性のHTTPエラーが一度も起きない前提は成り立たないため、**1日分の失敗で範囲全体を落とさない**。
+
+### 再開
+
+長時間の取り込みは中断されうる。再開時は **`fetch_log` に `outcome = 'ok'` で残っているレースを再取得しない**。`ok` 以外（`empty` / `http_error` / `parse_error`）は取り直す。
+
+書き込みが途中で落ちたレースは行が欠けた状態で残りうるが、`fetch_log` が `parse_error` になるため再開の対象に含まれ、次回の実行で取り直される。
 
 ## 制約
 

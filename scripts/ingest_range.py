@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import date, datetime, timezone
+from collections import Counter
+from datetime import date, datetime
 from pathlib import Path
 
 import duckdb
@@ -23,7 +24,7 @@ import duckdb
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from umagic.cache import LocalCacheFetcher, RobotsDisallowed
-from umagic.loader import ingest_race
+from umagic.loader import completed_race_keys, ingest_range
 from umagic.ops_schema import create_ops_schema
 from umagic.quality import run_quality_checks
 from umagic.schema import create_schema
@@ -54,46 +55,39 @@ def main() -> int:
     if is_new:
         create_schema(conn)
         create_ops_schema(conn)
-        print(f"[init] 新規DB作成: {db_path}")
+        print(f"[init] 新規DB作成: {db_path}", flush=True)
     else:
-        print(f"[resume] 既存DBを使用: {db_path}")
+        print(f"[resume] 既存DBを使用: {db_path}", flush=True)
 
     fetcher = LocalCacheFetcher(cache_dir=Path(args.cache_dir), user_agent=UA,
                                min_interval=args.sleep)
     source = NetkeibaJraSource(fetcher)
 
-    day = args.date_from
-    n_ok = n_empty = n_error = 0
-    already_done = {r[0] for r in conn.execute(
-        "SELECT source_key FROM fetch_log WHERE page_kind='archive' AND outcome='ok'"
-    ).fetchall()}
+    n_done = len(completed_race_keys(conn))
+    if n_done:
+        print(f"[resume] 取り込み済み {n_done} レースをスキップする", flush=True)
+
+    def on_race_error(out):
+        print(f"  [{out.outcome}] {out.source_key}: {out.detail}", flush=True)
+
+    def on_day(day, race_keys, outcomes):
+        if not race_keys:
+            return  # JRA中央の開催が無い日。平日は大半がこれ
+        counts = Counter(o.outcome for o in outcomes)
+        print(f"[{day}] {len(race_keys)}R / 累計 "
+              f"ok={counts['ok']} empty={counts['empty']} "
+              f"error={counts['http_error'] + counts['parse_error']}", flush=True)
 
     try:
-        while day <= args.date_to:
-            try:
-                keys = source.list_race_keys(day)
-            except RobotsDisallowed as e:
-                print(f"[中断] {e}", file=sys.stderr)
-                return 2
-            for key in keys:
-                if key in already_done:
-                    continue
-                out = ingest_race(conn, fetcher, source, key)
-                if out.outcome == "ok":
-                    n_ok += 1
-                elif out.outcome == "empty":
-                    n_empty += 1
-                else:
-                    n_error += 1
-                    print(f"  [{out.outcome}] {key}: {out.detail}")
-            if keys:
-                print(f"[{day}] {len(keys)} races -> ok={n_ok} empty={n_empty} error={n_error}")
-            day += __import__("datetime").timedelta(days=1)
+        outcomes = ingest_range(conn, fetcher, source, args.date_from, args.date_to,
+                                resume=True, on_day=on_day, on_race_error=on_race_error)
     except RobotsDisallowed as e:
-        print(f"[中断] {e}", file=sys.stderr)
+        print(f"[中断] {e}", file=sys.stderr, flush=True)
         return 2
 
-    print(f"\n取り込み完了: ok={n_ok} empty={n_empty} error={n_error}")
+    counts = Counter(o.outcome for o in outcomes)
+    print(f"\n取り込み完了: ok={counts['ok']} empty={counts['empty']} "
+          f"http_error={counts['http_error']} parse_error={counts['parse_error']}", flush=True)
 
     report = run_quality_checks(conn, scope_from=args.date_from, scope_to=args.date_to)
     print()

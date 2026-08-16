@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import urllib.error
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import duckdb
 
@@ -145,7 +145,27 @@ def ingest_race(
                      detail=None, fetched_at=page.fetched_at)
         return IngestOutcome(source_key, "empty")
 
-    _write_race(conn, source.name, parsed)
+    # 書き込みの制約違反を捕まえる。捕まえないと、ヘッダを読めないレースが
+    # 1件あるだけで（`races.course` などが `NULL` になり `NOT NULL` 違反）
+    # 数千レースの取り込みが落ちる。パースが不完全だったことの現れなので
+    # `parse_error` に倒し、1レースを飛ばして次へ進む（`002-loader.md`）。
+    #
+    # **トランザクションで囲まない。** `_write_race` は子テーブルと `races` を
+    # DELETE してから INSERT し直すが、DuckDB は同一トランザクション内だと
+    # 削除済みの子行をまだ参照中とみなして外部キー違反を出すため、囲むと
+    # 再取り込みが必ず失敗する。
+    #
+    # 結果として、INSERT の途中で落ちたレースは行が欠けた状態で残りうる。
+    # ただし `fetch_log` に `parse_error` が入るので `outcome='ok'` を条件と
+    # する再開（`completed_race_keys`）の対象外となり、次回の実行で取り直される。
+    try:
+        _write_race(conn, source.name, parsed)
+    except Exception as e:  # noqa: BLE001
+        record_fetch(conn, url=url, source=source.name, page_kind="archive",
+                     source_key=source_key, http_status=200, outcome="parse_error",
+                     detail=f"write failed: {e}", fetched_at=page.fetched_at)
+        return IngestOutcome(source_key, "parse_error", f"write failed: {e}")
+
     record_fetch(conn, url=url, source=source.name, page_kind="archive",
                  source_key=source_key, http_status=200, outcome="ok",
                  detail=None, fetched_at=page.fetched_at)
@@ -153,26 +173,97 @@ def ingest_race(
                          n_rejected=len(parsed.rejected))
 
 
+def list_day_races(
+    conn: duckdb.DuckDBPyConnection,
+    source: Source,
+    day: date,
+) -> tuple[list[str], IngestOutcome]:
+    """1日分の `race_id` を列挙し、`day_index` の取得結果を `fetch_log` に記録する。
+
+    `002-loader.md` は `fetch_log.page_kind` に `day_index` を記録することを
+    求めている。記録しないと `fetch_incomplete`（`012-data-quality.md`）の
+    分母から日次インデックスが丸ごと抜け、**その日のレースを1件も取り込め
+    なかったこと自体が検知できない**。
+
+    `archive` と同じく、`robots.txt` 以外の失敗で全体を止めない
+    （`002-loader.md` の失敗時の挙動）。日次インデックスの一過性の
+    HTTPエラーで数千レースの取り込みが落ちるのを防ぐ。
+    """
+    key = day.strftime("%Y%m%d")
+    url = source.url_for(key, "day_index")
+    try:
+        race_keys = source.list_race_keys(day)
+    except RobotsDisallowed:
+        raise
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
+        record_fetch(conn, url=url, source=source.name, page_kind="day_index",
+                     source_key=key, http_status=None, outcome="http_error",
+                     detail=str(e), fetched_at=datetime.now(timezone.utc))
+        return [], IngestOutcome(key, "http_error", str(e))
+    except Exception as e:  # noqa: BLE001 — パース例外も次の日へ進む
+        record_fetch(conn, url=url, source=source.name, page_kind="day_index",
+                     source_key=key, http_status=200, outcome="parse_error",
+                     detail=str(e), fetched_at=datetime.now(timezone.utc))
+        return [], IngestOutcome(key, "parse_error", str(e))
+
+    record_fetch(conn, url=url, source=source.name, page_kind="day_index",
+                 source_key=key, http_status=200,
+                 outcome="ok" if race_keys else "empty",
+                 detail=None, fetched_at=datetime.now(timezone.utc))
+    return race_keys, IngestOutcome(key, "ok" if race_keys else "empty")
+
+
+def completed_race_keys(conn: duckdb.DuckDBPyConnection) -> set[str]:
+    """すでに取り込み済み（`outcome='ok'`）のレースキー。再開時のスキップに使う。"""
+    return {r[0] for r in conn.execute(
+        "SELECT source_key FROM fetch_log WHERE page_kind = 'archive' AND outcome = 'ok'"
+    ).fetchall()}
+
+
 def ingest_range(
     conn: duckdb.DuckDBPyConnection,
     fetcher: Fetcher,
     source: Source,
-    start,
-    end,
+    start: date,
+    end: date,
+    *,
+    resume: bool = True,
+    on_day=None,
+    on_race_error=None,
 ) -> list[IngestOutcome]:
     """`start`〜`end`（`date`、両端含む）の日付範囲を取り込む。
 
-    `robots.txt` が取得を禁止した場合は `RobotsDisallowed` がそのまま
-    伝播し、全体を中断する（`D-014` 条件3）。それ以外の失敗はレースを
-    1件飛ばして続ける（`002-loader.md` の失敗時の挙動）。
+    `robots.txt` が取得を禁止した場合のみ `RobotsDisallowed` がそのまま
+    伝播し、全体を中断する（`D-014` 条件3）。それ以外の失敗は、レースも
+    日次インデックスも1件飛ばして続ける（`002-loader.md` の失敗時の挙動）。
+
+    `resume=True` のとき、`fetch_log` に `outcome='ok'` で残っている
+    レースを再取得しない。長時間の取り込みを中断・再開できるようにする。
     """
     import datetime as _dt
 
     outcomes: list[IngestOutcome] = []
+    done = completed_race_keys(conn) if resume else set()
+
     day = start
     while day <= end:
-        race_keys = source.list_race_keys(day)
+        race_keys, day_outcome = list_day_races(conn, source, day)
+        # `empty` は「その日にJRA中央開催が無い」であり平日は大半がこれ。
+        # 異常ではないので通知しない（`fetch_log` には記録済み）
+        if day_outcome.outcome in ("http_error", "parse_error"):
+            outcomes.append(day_outcome)
+            if on_race_error:
+                on_race_error(day_outcome)
+
         for key in race_keys:
-            outcomes.append(ingest_race(conn, fetcher, source, key))
+            if key in done:
+                continue
+            out = ingest_race(conn, fetcher, source, key)
+            outcomes.append(out)
+            if out.outcome != "ok" and on_race_error:
+                on_race_error(out)
+
+        if on_day:
+            on_day(day, race_keys, outcomes)
         day += _dt.timedelta(days=1)
     return outcomes
