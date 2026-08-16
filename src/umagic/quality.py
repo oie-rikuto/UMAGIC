@@ -97,46 +97,132 @@ FAIL_CHECKS: dict[str, str] = {
     """,
 }
 
-# --- warn 系（分子・分母を明示。年代別にも分解する） -------------------------
+# --- warn 系 -----------------------------------------------------------------
+#
+# 各検査は `(bucket, num, den)` を返すSQLを持つ。`by_year` は必須、`by_group`
+# は次元がある検査のみ。全体の率は `by_year` を合算して求める。
+#
+# 年代別に出すのは `012-data-quality.md` の要求であり、`Q-020` が
+# 「率だけでなく分布を見る必要がある」としているため。年代に偏りがあれば
+# 単なる欠損ではなく取得ロジックの不具合を疑える。
+#
+# `rejected_rate` と `fetch_incomplete` の年は `source_key` の先頭4桁から取る。
+# netkeiba の race_id は年で始まり、day_index の source_key は YYYYMMDD なので
+# どちらも同じ規則で読める。**取り込みに失敗したレースは `races` に行が無い**
+# ため、`races.date` から年を引くと失敗分が年代別集計から丸ごと消える。
 
-WARN_CHECKS: dict[str, tuple[str, str]] = {
-    "corners_missing": (
-        """
-        SELECT COUNT(*) FROM runners ru JOIN races r USING (race_id)
-        WHERE ru.status IN ('出走','降着') AND r.corner_nos IS NOT NULL
-          AND len(r.corner_nos) > 0 AND ru.corners IS NULL
+WARN_CHECKS: dict[str, dict[str, str]] = {
+    "corners_missing": {
+        "by_year": """
+            SELECT YEAR(r.date) AS bucket,
+                   COUNT(*) FILTER (WHERE ru.corners IS NULL) AS num,
+                   COUNT(*) AS den
+            FROM runners ru JOIN races r USING (race_id)
+            WHERE ru.status IN ('出走','降着')
+              AND r.corner_nos IS NOT NULL AND len(r.corner_nos) > 0
+            GROUP BY 1 ORDER BY 1
         """,
-        """
-        SELECT COUNT(*) FROM runners ru JOIN races r USING (race_id)
-        WHERE ru.status IN ('出走','降着') AND r.corner_nos IS NOT NULL
-          AND len(r.corner_nos) > 0
+    },
+    "rejected_rate": {
+        "by_year": """
+            WITH rej AS (
+                SELECT TRY_CAST(SUBSTR(source_key, 1, 4) AS INTEGER) AS bucket,
+                       COUNT(*) AS n
+                FROM rejected_rows GROUP BY 1
+            ), run AS (
+                SELECT YEAR(r.date) AS bucket, COUNT(*) AS n
+                FROM runners ru JOIN races r USING (race_id) GROUP BY 1
+            )
+            SELECT COALESCE(rej.bucket, run.bucket) AS bucket,
+                   COALESCE(rej.n, 0) AS num,
+                   COALESCE(rej.n, 0) + COALESCE(run.n, 0) AS den
+            FROM rej FULL OUTER JOIN run ON rej.bucket = run.bucket
+            ORDER BY 1
         """,
-    ),
-    "rejected_rate": (
-        "SELECT COUNT(*) FROM rejected_rows",
-        "SELECT (SELECT COUNT(*) FROM runners) + (SELECT COUNT(*) FROM rejected_rows)",
-    ),
-    "fetch_incomplete": (
-        "SELECT COUNT(*) FROM fetch_log WHERE outcome <> 'ok'",
-        "SELECT COUNT(*) FROM fetch_log",
-    ),
-    "odds_coverage": (
-        "SELECT COUNT(DISTINCT race_id) FROM odds",
-        "SELECT COUNT(*) FROM races",
-    ),
-    "laps_coverage": (
-        "SELECT COUNT(*) FROM races r WHERE NOT EXISTS "
-        "(SELECT 1 FROM laps l WHERE l.race_id = r.race_id)",
-        "SELECT COUNT(*) FROM races",
-    ),
+        # 未知の着順マーカーは `raw` まで出す。`Q-023`（出走取消・失格の表記が
+        # 未観測）はここに実物が溜まることで閉じられる。他の理由は `raw` が
+        # 通過順の文字列などで値が散らばるため理由だけにまとめる
+        "by_group": """
+            SELECT reason || CASE WHEN reason = 'unknown_finish_marker'
+                                  THEN ' (' || raw || ')' ELSE '' END AS bucket,
+                   COUNT(*) AS num, COUNT(*) AS den
+            FROM rejected_rows GROUP BY 1 ORDER BY 2 DESC
+        """,
+    },
+    # `day_index` の `empty` は「その日にJRA中央開催が無い」であり平日は
+    # 大半がこれ。異常ではないので分子から外す。外さないと、開催の無い日が
+    # 率を支配して実際の取得漏れが見えなくなる。
+    "fetch_incomplete": {
+        "by_year": """
+            SELECT TRY_CAST(SUBSTR(source_key, 1, 4) AS INTEGER) AS bucket,
+                   COUNT(*) FILTER (
+                       WHERE outcome <> 'ok'
+                         AND NOT (page_kind = 'day_index' AND outcome = 'empty')
+                   ) AS num,
+                   COUNT(*) AS den
+            FROM fetch_log GROUP BY 1 ORDER BY 1
+        """,
+        "by_group": """
+            SELECT page_kind || '/' || outcome AS bucket,
+                   COUNT(*) AS num, COUNT(*) AS den
+            FROM fetch_log GROUP BY 1 ORDER BY 2 DESC
+        """,
+    },
+    "odds_coverage": {
+        "by_year": """
+            SELECT YEAR(r.date) AS bucket,
+                   COUNT(DISTINCT o.race_id) AS num,
+                   COUNT(DISTINCT r.race_id) AS den
+            FROM races r LEFT JOIN odds o USING (race_id)
+            GROUP BY 1 ORDER BY 1
+        """,
+        # Q-018: 単勝以外はほぼ0%になる見込み。券種別に出して実測する
+        "by_group": """
+            SELECT o.bet_type AS bucket,
+                   COUNT(DISTINCT o.race_id) AS num,
+                   (SELECT COUNT(*) FROM races) AS den
+            FROM odds o GROUP BY 1 ORDER BY 2 DESC
+        """,
+    },
+    "laps_coverage": {
+        "by_year": """
+            SELECT YEAR(r.date) AS bucket,
+                   COUNT(*) FILTER (
+                       WHERE NOT EXISTS (SELECT 1 FROM laps l WHERE l.race_id = r.race_id)
+                   ) AS num,
+                   COUNT(*) AS den
+            FROM races r GROUP BY 1 ORDER BY 1
+        """,
+    },
 }
+
+
+@dataclass
+class WarnResult:
+    """1つの `warn` 検査の結果。全体の率に加え、年代別と（あれば）次元別を持つ。"""
+
+    check_id: str
+    by_year: list[tuple[object, int, int]] = field(default_factory=list)
+    by_group: list[tuple[object, int, int]] = field(default_factory=list)
+
+    @property
+    def num(self) -> int:
+        return sum(n for _, n, _ in self.by_year)
+
+    @property
+    def den(self) -> int:
+        return sum(d for _, _, d in self.by_year)
+
+    @property
+    def rate(self) -> float | None:
+        return (self.num / self.den) if self.den else None
 
 
 @dataclass
 class QualityReport:
     run_id: int
     fail_counts: dict[str, int] = field(default_factory=dict)
-    warn_rates: dict[str, tuple[int, int]] = field(default_factory=dict)
+    warns: dict[str, WarnResult] = field(default_factory=dict)
     n_races: int = 0
     n_runners: int = 0
 
@@ -149,17 +235,42 @@ class QualityReport:
         return 0 if self.n_fail == 0 else 1
 
     def to_markdown(self) -> str:
+        def pct(num: int, den: int) -> str:
+            return f"{100 * num / den:.1f}%" if den else "n/a"
+
         lines = [f"# 品質レポート（run_id={self.run_id}）", ""]
         lines.append(f"対象: races={self.n_races} runners={self.n_runners}")
         lines.append("")
         lines.append("## fail")
+        lines.append("")
+        lines.append("| check_id | 違反件数 |")
+        lines.append("|---|---|")
         for check_id, n in self.fail_counts.items():
-            lines.append(f"- `{check_id}`: {n}件")
+            lines.append(f"| `{check_id}` | {n} |")
+        lines.append("")
+        lines.append(f"**fail 合計: {self.n_fail}件**"
+                     + ("（`P-0` 完了条件を満たす）" if self.n_fail == 0 else "（`D-040` により `P-0` 未完了）"))
+
         lines.append("")
         lines.append("## warn")
-        for check_id, (num, den) in self.warn_rates.items():
-            rate = f"{100 * num / den:.1f}%" if den else "n/a"
-            lines.append(f"- `{check_id}`: {num}/{den} ({rate})")
+        lines.append("")
+        lines.append("閾値を設けない（`D-040`）。件数と年代別分布を出す。")
+        for check_id, w in self.warns.items():
+            lines.append("")
+            lines.append(f"### `{check_id}`  {w.num}/{w.den} ({pct(w.num, w.den)})")
+            if w.by_year:
+                lines.append("")
+                lines.append("| 年 | 分子 | 分母 | 率 |")
+                lines.append("|---|---|---|---|")
+                for bucket, num, den in w.by_year:
+                    label = bucket if bucket is not None else "不明"
+                    lines.append(f"| {label} | {num} | {den} | {pct(num, den)} |")
+            if w.by_group:
+                lines.append("")
+                lines.append("| 内訳 | 件数 |")
+                lines.append("|---|---|")
+                for bucket, num, _den in w.by_group:
+                    lines.append(f"| {bucket} | {num} |")
         return "\n".join(lines)
 
 
@@ -190,13 +301,23 @@ def run_quality_checks(
                 [run_id, check_id, race_id, horse_id, detail],
             )
 
-    for check_id, (num_sql, den_sql) in WARN_CHECKS.items():
-        num = conn.execute(num_sql).fetchone()[0]
-        den = conn.execute(den_sql).fetchone()[0]
-        report.warn_rates[check_id] = (num, den)
+    for check_id, sqls in WARN_CHECKS.items():
+        w = WarnResult(check_id=check_id)
+        w.by_year = [tuple(r) for r in conn.execute(sqls["by_year"]).fetchall()]
+        if "by_group" in sqls:
+            w.by_group = [tuple(r) for r in conn.execute(sqls["by_group"]).fetchall()]
+        report.warns[check_id] = w
+
         conn.execute(
             "INSERT INTO quality_findings VALUES (?, ?, 'warn', NULL, NULL, ?)",
-            [run_id, check_id, f"{num}/{den}"],
+            [run_id, check_id, f"{w.num}/{w.den}"],
         )
+        # 年代別も残す。レポートは実行のたびに上書きされるが、
+        # quality_findings は run_id で追える（D-041 の「印」）
+        for bucket, num, den in w.by_year:
+            conn.execute(
+                "INSERT INTO quality_findings VALUES (?, ?, 'warn', NULL, NULL, ?)",
+                [run_id, f"{check_id}:year={bucket}", f"{num}/{den}"],
+            )
 
     return report

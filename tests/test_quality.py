@@ -11,12 +11,16 @@ from tests.conftest import NOW
 from umagic.quality import run_quality_checks
 
 
-def _race(conn, race_id, n_entries, n_starters, corner_nos=None, race_number=None):
+def _race(conn, race_id, n_entries, n_starters, corner_nos=None, race_number=None,
+         race_date="2023-01-01"):
+    # 日付は挿入時に決める。DuckDB は子行から参照されている親行を UPDATE
+    # できないため、後から races.date を書き換えられない
     conn.execute(
         "INSERT INTO races (race_id, date, course, race_number, distance, surface, "
         "n_entries, n_starters, corner_nos, source, fetched_at) "
-        "VALUES (?, '2023-01-01', '東京', ?, 2000, '芝', ?, ?, ?, 'netkeiba_jra', ?)",
-        [race_id, race_number or race_id, n_entries, n_starters, corner_nos, NOW],
+        "VALUES (?, ?, '東京', ?, 2000, '芝', ?, ?, ?, 'netkeiba_jra', ?)",
+        [race_id, race_date, race_number or race_id, n_entries, n_starters,
+         corner_nos, NOW],
     )
 
 
@@ -39,9 +43,10 @@ def _runner(conn, race_id, horse_id, number, status="出走", finish_pos=None,
     )
 
 
-def _clean_race(conn, race_id=1, n=4, corner_nos=(1, 2, 3, 4), race_number=None):
+def _clean_race(conn, race_id=1, n=4, corner_nos=(1, 2, 3, 4), race_number=None,
+               race_date="2023-01-01"):
     """全検査を通過する最小構成のレースを1つ作る。"""
-    _race(conn, race_id, n, n, list(corner_nos), race_number)
+    _race(conn, race_id, n, n, list(corner_nos), race_number, race_date)
     for i in range(1, n + 1):
         _runner(conn, race_id, i, i, finish_pos=i, time_sec=100.0 + i,
                corners=[1] * len(corner_nos), odds_win=float(i), popularity=i)
@@ -219,10 +224,11 @@ def test_warn_checks_report_rate(conn):
         [NOW],
     )
     report = run_quality_checks(conn)
-    assert report.warn_rates["rejected_rate"] == (1, 4)  # 3 runners + 1 rejected
-    assert report.warn_rates["fetch_incomplete"] == (1, 2)
-    assert report.warn_rates["laps_coverage"] == (1, 1)  # laps 無し
-    assert report.warn_rates["odds_coverage"] == (0, 1)
+    w = report.warns
+    assert (w["rejected_rate"].num, w["rejected_rate"].den) == (1, 4)  # 3 runners + 1 rejected
+    assert (w["fetch_incomplete"].num, w["fetch_incomplete"].den) == (1, 2)
+    assert (w["laps_coverage"].num, w["laps_coverage"].den) == (1, 1)  # laps 無し
+    assert (w["odds_coverage"].num, w["odds_coverage"].den) == (0, 1)
 
 
 def test_corners_missing_warn_counts_only_finishers(conn):
@@ -230,7 +236,95 @@ def test_corners_missing_warn_counts_only_finishers(conn):
     _runner(conn, 1, 1, 1, status="出走", finish_pos=1, time_sec=100.0, corners=None)  # 異常
     _runner(conn, 1, 2, 2, status="競走中止", finish_pos=None, time_sec=None, corners=None)  # 正常
     report = run_quality_checks(conn)
-    assert report.warn_rates["corners_missing"] == (1, 1)  # 分母は完走馬のみ
+    w = report.warns["corners_missing"]
+    assert (w.num, w.den) == (1, 1)  # 分母は完走馬のみ
+
+
+# --- 年代別内訳・次元別内訳（012-data-quality.md / tasks.md タスク15）--------
+
+def test_warn_checks_report_year_breakdown(conn):
+    """全 warn 検査が年代別内訳を返す（`012-data-quality.md`）。"""
+    _clean_race(conn, race_id=1, n=2, race_number=1, race_date="2022-04-01")
+    _clean_race(conn, race_id=2, n=2, race_number=2, race_date="2023-04-01")
+    for url, key in (("u1", "202204010101"), ("u2", "202304010101")):
+        conn.execute("INSERT INTO fetch_log VALUES (?, 'netkeiba_jra', 'archive', ?, "
+                    "200, 'ok', NULL, ?)", [url, key, NOW])
+
+    report = run_quality_checks(conn)
+    for check_id, w in report.warns.items():
+        assert w.by_year, f"{check_id} が年代別内訳を返していない"
+
+    years = [b for b, _, _ in report.warns["laps_coverage"].by_year]
+    assert years == [2022, 2023]
+
+
+def test_rejected_rate_year_from_source_key(conn):
+    """取り込みに失敗したレースは `races` に行が無いため、年は source_key から取る。"""
+    _clean_race(conn, race_id=1, n=1, race_number=1, race_date="2023-04-01")
+    # 2024年のレースは1行も取り込めていないが、棄却行だけは残っている
+    conn.execute(
+        "INSERT INTO rejected_rows VALUES ('netkeiba_jra', '202401010101', '3', "
+        "'unknown_finish_marker', '取', ?)", [NOW],
+    )
+    report = run_quality_checks(conn)
+    buckets = {b: (n, d) for b, n, d in report.warns["rejected_rate"].by_year}
+    assert buckets[2024] == (1, 1)   # races に行が無くても年代別に現れる
+    assert buckets[2023] == (0, 1)
+
+
+def test_rejected_rate_group_surfaces_unknown_markers(conn):
+    """Q-023: 未知の着順マーカーは `raw` まで内訳に出て、実物が特定できる。"""
+    _clean_race(conn, race_id=1, n=1, race_number=1)
+    for reason, raw in (("unknown_finish_marker", "取"),
+                        ("unknown_finish_marker", "取"),
+                        ("unknown_finish_marker", "失"),
+                        ("corners_length_mismatch", "3-2")):
+        conn.execute(
+            "INSERT INTO rejected_rows VALUES ('netkeiba_jra', '1', '3', ?, ?, ?)",
+            [reason, raw, NOW],
+        )
+    report = run_quality_checks(conn)
+    groups = dict((b, n) for b, n, _ in report.warns["rejected_rate"].by_group)
+    assert groups["unknown_finish_marker (取)"] == 2
+    assert groups["unknown_finish_marker (失)"] == 1
+    # 通過順は値が散らばるので理由だけにまとめる
+    assert groups["corners_length_mismatch"] == 1
+
+
+def test_fetch_incomplete_excludes_day_index_empty(conn):
+    """開催の無い日（day_index/empty）は不完全に数えない。平日が率を支配するのを防ぐ。"""
+    conn.execute("INSERT INTO fetch_log VALUES ('d1', 'netkeiba_jra', 'day_index', "
+                "'20230529', 200, 'empty', NULL, ?)", [NOW])
+    conn.execute("INSERT INTO fetch_log VALUES ('a1', 'netkeiba_jra', 'archive', "
+                "'202305021211', 200, 'ok', NULL, ?)", [NOW])
+    conn.execute("INSERT INTO fetch_log VALUES ('a2', 'netkeiba_jra', 'archive', "
+                "'202305021212', 200, 'empty', NULL, ?)", [NOW])
+    report = run_quality_checks(conn)
+    w = report.warns["fetch_incomplete"]
+    assert w.num == 1   # archive/empty のみ。day_index/empty は数えない
+    assert w.den == 3
+    groups = dict((b, n) for b, n, _ in w.by_group)
+    assert groups["day_index/empty"] == 1
+
+
+def test_odds_coverage_group_by_bet_type(conn):
+    """Q-018 の実害を券種別に可視化する。"""
+    _clean_race(conn, race_id=1, n=1, race_number=1)
+    conn.execute(
+        "INSERT INTO odds VALUES (1, '単勝', '1', [1], 2.0, 2.0, ?, 'netkeiba_jra', ?)",
+        [NOW, NOW],
+    )
+    report = run_quality_checks(conn)
+    groups = dict((b, n) for b, n, _ in report.warns["odds_coverage"].by_group)
+    assert groups == {"単勝": 1}   # 複勝・ワイドは0件のまま（Q-018）
+
+
+def test_markdown_report_includes_year_table(conn):
+    _clean_race(conn, race_id=1, n=2, race_number=1)
+    md = run_quality_checks(conn).to_markdown()
+    assert "年代別分布" in md
+    assert "| 年 | 分子 | 分母 | 率 |" in md
+    assert "P-0" in md
 
 
 # --- レポートと終了コード ----------------------------------------------------
