@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  no-raw-data-committed:
+    # R-017 / D-014 条件1: 生データ・キャッシュ・DBファイルは再配布しない。
+    # .gitignore に頼るだけでなく、リポジトリの実体を検査して確実に落とす。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 生HTML・キャッシュ・DBファイルがコミットされていないことを確認する
+        run: |
+          set -euo pipefail
+          pattern='\.(duckdb|duckdb\.wal|html\.gz)$|(^|/)raw/'
+          hits=$(git ls-files | grep -E "$pattern" || true)
+          if [ -n "$hits" ]; then
+            echo "以下のファイルは R-017 / D-014 条件1 によりコミットしてはならない:"
+            echo "$hits"
+            exit 1
+          fi
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+      - name: Set up Python
+        run: uv python install
+      - name: Install dependencies
+        run: uv sync --locked
+      - name: Run tests
+        run: uv run pytest -q
