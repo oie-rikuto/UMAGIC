@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | Phase | P-0 |
-| 関連決定 | `D-009` `D-010` `D-011` `D-012` `D-020` `D-026` `D-029` `D-034` `D-035` `D-036` `D-043` `D-044` `D-046` |
-| 関連特徴量 | `F-101` `F-102` `F-501` `F-502` `F-801` `F-804` `F-901` |
+| 関連決定 | `D-009` `D-010` `D-011` `D-012` `D-020` `D-026` `D-029` `D-034` `D-035` `D-036` `D-043` `D-044` `D-046` `D-048` `D-049` `D-050` |
+| 関連特徴量 | `F-101` `F-102` `F-2xx` `F-501` `F-502` `F-503` `F-703` `F-801` `F-803` `F-804` `F-901` |
 | 関連要件 | `R-011` `R-012` `R-013` `R-014` `R-015` |
 | 状態 | Draft |
 
@@ -73,6 +73,10 @@ CREATE TABLE races (
     n_starters        SMALLINT  NOT NULL,
     prize             BIGINT,
     corner_nos        SMALLINT[],
+    race_class        VARCHAR,
+    weight_rule       VARCHAR,
+    meeting_no        SMALLINT,
+    meeting_day       SMALLINT,
     source            VARCHAR   NOT NULL,
     fetched_at        TIMESTAMP NOT NULL,
     UNIQUE (date, course, race_number),
@@ -83,7 +87,12 @@ CREATE TABLE races (
     CHECK (surface IN ('芝', 'ダート', '障害')),
     CHECK (direction IS NULL OR direction IN ('右', '左', '直線')),
     CHECK (track_condition IS NULL
-           OR track_condition IN ('良', '稍重', '重', '不良'))
+           OR track_condition IN ('良', '稍重', '重', '不良')),
+    CHECK (race_class IS NULL OR race_class IN
+           ('新馬', '未勝利', '1勝クラス', '2勝クラス', '3勝クラス', 'オープン')),
+    CHECK (weight_rule IS NULL OR weight_rule IN ('馬齢', '定量', '別定', 'ハンデ')),
+    CHECK (meeting_no IS NULL OR meeting_no >= 1),
+    CHECK (meeting_day IS NULL OR meeting_day >= 1)
 );
 ```
 
@@ -94,6 +103,9 @@ CREATE TABLE races (
 | `prize` | 1着賞金（円）。`F-803` がレースの格の代理変数として使う |
 | `weather_forecast` | 予報値（`D-029`）。**実測 `weather` と混ぜない。過去分は `NULL`**（`Q-021`） |
 | `corner_nos` | このレースで記録されたコーナーの番号を順に持つ（`D-043`）。直線競走は `[]`、取得できていなければ `NULL` |
+| `race_class` | クラス（`D-049`）。`D-003` の手段①がこれを特徴量として使う。**`grade` とは別物**で、`grade` は `オープン` の内訳を表す |
+| `weight_rule` | 斤量条件（`D-049`）。`weight_carried` の解釈が条件により反転するため列として持つ |
+| `meeting_no` / `meeting_day` | 開催回次・日目（`D-049`）。`F-503` の材料。**柵移動は取得できない**（`Q-027`） |
 
 `UNIQUE (date, course, race_number)` は `D-010` の判定キーが一意であることを保証する。
 
@@ -140,13 +152,15 @@ CREATE TABLE runners (
     time_sec        DECIMAL(6,1),
     last_3f         DECIMAL(4,1),
     corners         SMALLINT[],
+    affiliation     VARCHAR,
     source          VARCHAR   NOT NULL,
     fetched_at      TIMESTAMP NOT NULL,
     PRIMARY KEY (race_id, horse_id),
     UNIQUE (race_id, number),
     CHECK (status IN ('出走', '降着', '競走中止', '失格', '出走取消', '競走除外')),
     CHECK (number >= 1),
-    CHECK (finish_pos IS NULL OR finish_pos >= 1)
+    CHECK (finish_pos IS NULL OR finish_pos >= 1),
+    CHECK (affiliation IS NULL OR affiliation IN ('東', '西', '地', '外'))
 );
 ```
 
@@ -158,6 +172,7 @@ CREATE TABLE runners (
 | `margin` | 着差。ソースの表記をそのまま保持する（`ハナ` `クビ` `アタマ` `3.1/2` `同着` 等）。数値化は `003-features.md` の責務 |
 | `time_sec` | 走破タイム（秒）。ソースの `1:08.7` 形式を秒に変換して格納する |
 | `corners` | コーナー通過順。**要素数はレースによって変わり、添字の意味は `races.corner_nos` が与える**（`D-043`）。コーナーのないコースは空配列 |
+| `affiliation` | 所属（`D-049`）。`F-703` の遠征判定に使う。調教師欄の `[東]` `[西]` マーカーから採る |
 
 **`corners` の空配列と `NULL` を区別する（`R-015`）。** 空配列は「このレースにコーナーが存在しない」、`NULL` は「この馬の通過順が存在しない」を表す。
 
@@ -191,7 +206,7 @@ n_entries  = runners の全行数
 n_starters = status IN ('出走','降着','競走中止','失格') の行数
 ```
 
-**着順マーカーが上表にないものだった場合、その行を取り込まず除外ログに記録する（`D-034` / `R-013`）。** 取消と失格の表記は実データで観測できていないため、推測で追加しない。
+**着順マーカーが上表にないものだった場合、その行を取り込まず除外ログに記録する（`D-034` / `R-013`）。** 失格の表記は実データで観測できていないため、推測で追加しない（`Q-023`）。
 
 ### horses
 
@@ -209,6 +224,10 @@ CREATE TABLE horses (
 ```
 
 `sire_id` / `dam_id` / `damsire_id` に外部キーを張らない。**種牡馬・繁殖牝馬はJRAで走っていないことがあり、`horses` に行が存在しない場合がある。**
+
+**血統3列は `archive` ページから取得できない（`D-050`）。** 馬ごとの血統ページを別途引いて埋める。`002-loader.md` の `horse_ped` を参照。
+
+**`birth` は当面 `NULL` のままとする（`D-050`）。** 馬齢は `runners.age` が持ち、`F-xxx` のいずれも生年月日そのものを要求しない。
 
 ### payouts / odds
 
@@ -295,6 +314,9 @@ CREATE TABLE laps (
 | 6 | `corners = []` と `corners = NULL` を挿入 | どちらも成功し、区別して読める |
 | 7 | `corner_nos = [3,4]` のレースに `corners = [3,2]` を挿入 | 成功し、`corners[1]` が3コーナーの値として読める |
 | 8 | `corner_nos = []` と `corner_nos = NULL` を挿入 | どちらも成功し、区別して読める |
+| 9 | `race_class` に `4勝クラス` を挿入 | `CHECK` 違反で拒否 |
+| 10 | `weight_rule` に定義外の値を挿入 | `CHECK` 違反で拒否 |
+| 11 | `affiliation` に `北` を挿入 | `CHECK` 違反で拒否 |
 
 ### 実データによる受け入れケース
 

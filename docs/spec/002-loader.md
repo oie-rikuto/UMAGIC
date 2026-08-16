@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Phase | P-0 |
-| 関連決定 | `D-005` `D-009` `D-014` `D-023` `D-026` `D-034` `D-035` `D-037` `D-038` `D-039` `D-043` `D-044` `D-045` |
+| 関連決定 | `D-005` `D-009` `D-014` `D-023` `D-026` `D-034` `D-035` `D-037` `D-038` `D-039` `D-043` `D-044` `D-045` `D-048` `D-049` `D-050` |
 | 関連要件 | `R-011` `R-012` `R-013` `R-015` `R-016` `R-017` `R-021` |
 | 先行仕様 | `001-schema.md` |
 | 状態 | Draft |
@@ -26,6 +26,7 @@
 | 日付から `race_id` を列挙 | `day_index` | `https://db.netkeiba.com/race/list/{YYYYMMDD}/` |
 | 確定済みレース | `archive` | `https://db.netkeiba.com/race/{race_id}/` |
 | 発走前のレース | `shutuba` | `https://race.netkeiba.com/race/shutuba.html?race_id={race_id}` |
+| 馬の血統（`D-050`） | `horse_ped` | `https://db.netkeiba.com/horse/ped/{horse_key}/` |
 
 - **確定済みレースに `race.netkeiba.com/race/result.html` を使わない。** 年代でも分岐しない
 - `shutuba` から取り込んだ行は、レース確定後に `archive` の値で**上書きする**
@@ -52,7 +53,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Literal, Protocol
 
-PageKind = Literal["day_index", "archive", "shutuba"]
+PageKind = Literal["day_index", "archive", "shutuba", "horse_ped"]
 Outcome  = Literal["ok", "empty", "http_error", "parse_error"]
 
 
@@ -154,6 +155,69 @@ class Source(Protocol):
 
 **障害の表記は意図的に読まない（`D-025` / `D-047`）。** `day_index` の段階で除外しているが、すり抜けても距離が読めず `parse_error` になり、静かに混入しない。`障芝 ダート2910m` は `芝` も `ダ` も内側に含むため、**先頭に錨を打つことでのみ弾ける**。
 
+#### レース属性 → `race_class` / `weight_rule` / `meeting_no` / `meeting_day`（`D-049`）
+
+`<p class="smalltxt">` の内容を空白で分割して読む。
+
+```
+2023年05月28日 2回東京12日目 3歳オープン  (国際) 牡・牝(指)(定量)
+└─ 日付 ──┘ └─ 開催 ──┘ └───── 条件 ─────────────┘
+```
+
+| 対象 | 規則 |
+|---|---|
+| `meeting_no` / `meeting_day` | 第2トークンを `N回<競馬場>M日目` として読み、`N` と `M` を採る |
+| `race_class` | 第3トークン以降から下表のキーワードを探す |
+| `weight_rule` | 同上。丸括弧内の `馬齢` / `定量` / `別定` / `ハンデ` |
+
+**`race_class` は年齢条件を除いた部分から採る。** 第3トークンは `3歳未勝利` `4歳以上1勝クラス` `3歳以上オープン` のように**年齢条件が前置される**ため、年齢条件を剥がしてから判定する。
+
+| 条件文中の表記 | `race_class` |
+|---|---|
+| `新馬` | `新馬` |
+| `未勝利` | `未勝利` |
+| `1勝クラス` | `1勝クラス` |
+| `2勝クラス` | `2勝クラス` |
+| `3勝クラス` | `3勝クラス` |
+| `オープン` | `オープン` |
+| 上記のいずれにも一致しない | `NULL`。`rejected_rows` に `reason = 'unknown_race_class'` を記録する |
+
+保存済み3,606ページを走査し、`race_class` は上表の6値、`weight_rule` は4値に閉じていることを確認した（2026-08-17）。`(混)` `(国際)` `[指]` `(特指)` `牝` `見習騎手` `九州産馬` は本仕様では取り込まない。
+
+**`race_class` と `grade` は別の列である。** `grade` は重賞にのみ付き（実測5.8%）、`オープン` の内訳を表す。
+
+#### 所属 → `runners.affiliation`（`D-049`）
+
+調教師欄の先頭マーカーから採る。
+
+| 表記 | `affiliation` |
+|---|---|
+| `[東]` | `東` |
+| `[西]` | `西` |
+| `[地]` | `地` |
+| `[外]` | `外` |
+| マーカーなし | `NULL` |
+
+#### 血統 → `horses.sire_id` / `dam_id` / `damsire_id`（`D-050`）
+
+`horse_ped` ページの `<table class="blood_table detail">`（5代血統表）から採る。表は `rowspan` で世代を表す。
+
+| 対象 | 規則 |
+|---|---|
+| 父 | 出現順で**1つ目の `rowspan="16"`** のセル内の `/horse/{key}/` リンク |
+| 母 | 出現順で**2つ目の `rowspan="16"`** のセル |
+| 母父 | 母のセルより後で**最初に現れる `rowspan="8"`** のセル |
+
+得られた `{key}` を `resolve(conn, 'horse', source, key)` で内部IDに写す。
+
+**先祖は `horses` に行を持たないことがある。** `001-schema.md` は血統3列に外部キーを張らないと定めており、`source_ids` にのみ登録する。
+
+**外国産の先祖は `000a001fb6` のような非数値キーを持つ。** `source_ids.source_key` は `VARCHAR` なのでそのまま扱える。
+
+規則が一致しない場合は3列とも `NULL` とし、`rejected_rows` に `reason = 'pedigree_unparsed'` を記録する。**推測で補わない。**
+
+タスティエーラ（`2020103532`）で実物を確認済み（2026-08-17）: 父サトノクラウン（`2012104668`）／母パルティトゥーラ（`2014106097`）／母父マンハッタンカフェ（`1998101554`）。
+
 #### その他
 
 | 列 | 表記 | 変換 |
@@ -250,7 +314,7 @@ CREATE TABLE fetch_log (
     detail       VARCHAR,
     fetched_at   TIMESTAMP NOT NULL,
     CHECK (outcome IN ('ok', 'empty', 'http_error', 'parse_error')),
-    CHECK (page_kind IN ('day_index', 'archive', 'shutuba'))
+    CHECK (page_kind IN ('day_index', 'archive', 'shutuba', 'horse_ped'))
 );
 
 CREATE TABLE rejected_rows (
@@ -293,6 +357,8 @@ ON CONFLICT (url) DO UPDATE SET
 | **書き込み時の制約違反** | `outcome = 'parse_error'` を記録し、次へ進む。パースが不完全だったことの現れとして扱う |
 | 未知の着順マーカー | その**行のみ**棄却して `rejected_rows` に記録。レースの他の行は取り込む |
 | コーナー表の見出しが解釈できない | `corner_nos = NULL` でレースを取り込み、`rejected_rows` に記録。**行は捨てない**（`D-043`） |
+| クラスが対応表に無い | `race_class = NULL` でレースを取り込み、`rejected_rows` に記録。**行は捨てない**（`D-049`） |
+| 血統表が解釈できない | 血統3列を `NULL` のままにし、`rejected_rows` に記録。**馬の行は捨てない**（`D-050`） |
 | 通過列の要素数が `corner_nos` と不一致 | `corners = NULL` で行を取り込み、`rejected_rows` に記録（`D-044`） |
 | `robots.txt` が取得を禁止 | **全体を中断する**（`D-014` 条件3） |
 
@@ -324,6 +390,10 @@ ON CONFLICT (url) DO UPDATE SET
 | 2 | 着順欄 `中` | `status='競走中止'`, `finish_pos IS NULL` |
 | 3 | 着順欄 `除` | `status='競走除外'`, `finish_pos IS NULL` |
 | 3b | 着順欄 `取` | `status='出走取消'`, `finish_pos IS NULL`（`D-048`） |
+| 3c | `smalltxt` が `2回東京12日目 3歳オープン (国際) 牡・牝(指)(定量)` | `meeting_no=2`, `meeting_day=12`, `race_class='オープン'`, `weight_rule='定量'` |
+| 3d | `smalltxt` が `1回中山5日目 4歳以上1勝クラス (混)[指](ハンデ)` | `meeting_no=1`, `meeting_day=5`, `race_class='1勝クラス'`, `weight_rule='ハンデ'` |
+| 3e | 調教師欄が `[西] <a ...>` | `affiliation='西'` |
+| 3f | 血統表の `rowspan=16` が2つ、その後の `rowspan=8` | 父・母・母父の3キーが取れる（`D-050`） |
 | 4 | 着順欄 `失` など表に無い値 | 行を棄却し `rejected_rows` に1件 |
 | 5 | 馬体重 `計不` | `horse_weight IS NULL`, `weight_diff IS NULL` |
 | 6 | 馬体重 `490(-2)` | `490`, `-2` |
@@ -377,6 +447,7 @@ ON CONFLICT (url) DO UPDATE SET
 | `Q-023` | 失格の着順マーカーが未観測（出走取消は `D-048` で解決） | 対応表に1行足りず、該当行は棄却される。`rejected_rows` に溜まるので発生は検知できる |
 | `Q-024` | JRDB合流時の名寄せ | `D-038` により `P-4` まで影響しない |
 | `Q-020` | 棄却行の許容水準が未定 | `rejected_rows` の件数をどこで異常とみなすかが決まらない |
+| `Q-027` | 柵移動（A/B/Cコース）がページに存在しない | `F-503` は `meeting_no` / `meeting_day` のみで構成される。部分的な実装にとどまる |
 | `Q-026` | 直線競走（`202304020211`）のページが未取得 | 受け入れケース1件と単体テスト観点9が実データで確認できない。合成データでは検証できる |
 | `Q-021` | 天気予報の取得元が未定 | `races.weather_forecast` を埋める経路がまだ無い |
 | `Q-018` | 複勝・ワイドの過去オッズが取得できない | `odds` テーブルは単勝以外ほぼ埋まらない |
