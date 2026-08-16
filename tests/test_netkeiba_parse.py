@@ -1,0 +1,279 @@
+"""`002-loader.md` の単体テスト観点1〜10e、および day_index。"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+import pytest
+
+from tests.fixtures.build_archive import build_archive_html
+from umagic.sources.base import RawPage
+from umagic.sources.netkeiba import list_race_keys, parse_archive
+
+FETCHED_AT = datetime(2026, 8, 16, tzinfo=timezone.utc)
+
+
+def _page(body: bytes, race_id: int = 1, page_kind="archive") -> RawPage:
+    return RawPage(source="netkeiba_jra", page_kind=page_kind, source_key=str(race_id),
+                   url="https://db.netkeiba.com/race/x/", body=body, encoding="unknown",
+                   fetched_at=FETCHED_AT, from_cache=False)
+
+
+def _runner(**kw):
+    base = dict(finish="1", frame=1, number=1, name="馬", passage="")
+    base.update(kw)
+    return base
+
+
+# --- 1〜4: 着順欄 -----------------------------------------------------------
+
+def test_1_demotion_marker():
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              corner_nos=[1, 2, 3, 4],
+                              runners=[_runner(finish="4(降)", passage="1-1-1-1")])
+    pr = parse_archive(_page(html))
+    assert pr.runners[0]["status"] == "降着"
+    assert pr.runners[0]["finish_pos"] == 4
+
+
+def test_2_dnf_marker():
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              corner_nos=[1, 2, 3, 4],
+                              runners=[_runner(finish="中", passage="")])
+    pr = parse_archive(_page(html))
+    assert pr.runners[0]["status"] == "競走中止"
+    assert pr.runners[0]["finish_pos"] is None
+
+
+def test_3_scratched_marker():
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              corner_nos=[1, 2, 3, 4],
+                              runners=[_runner(finish="除", passage="")])
+    pr = parse_archive(_page(html))
+    assert pr.runners[0]["status"] == "競走除外"
+    assert pr.runners[0]["finish_pos"] is None
+
+
+def test_4_unknown_marker_rejected():
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              corner_nos=[1, 2, 3, 4],
+                              runners=[_runner(finish="取", passage="")])
+    pr = parse_archive(_page(html))
+    assert len(pr.runners) == 0
+    assert len(pr.rejected) == 1
+    assert pr.rejected[0].reason == "unknown_finish_marker"
+
+
+# --- 5〜6: 馬体重 ------------------------------------------------------------
+
+def test_5_weight_unmeasured():
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              corner_nos=[1, 2, 3, 4],
+                              runners=[_runner(passage="1-1-1-1", horse_weight="計不")])
+    pr = parse_archive(_page(html))
+    assert pr.runners[0]["horse_weight"] is None
+    assert pr.runners[0]["weight_diff"] is None
+
+
+def test_6_weight_parsed():
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              corner_nos=[1, 2, 3, 4],
+                              runners=[_runner(passage="1-1-1-1", horse_weight="490(-2)")])
+    pr = parse_archive(_page(html))
+    assert pr.runners[0]["horse_weight"] == 490
+    assert pr.runners[0]["weight_diff"] == -2
+
+
+# --- 7〜8: タイム・単勝 ------------------------------------------------------
+
+def test_7_time_parsed():
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              corner_nos=[1, 2, 3, 4],
+                              runners=[_runner(passage="1-1-1-1", time="1:08.0")])
+    pr = parse_archive(_page(html))
+    assert pr.runners[0]["time_sec"] == 68.0
+
+
+def test_8_odds_dash_is_null():
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              corner_nos=[1, 2, 3, 4],
+                              runners=[_runner(passage="1-1-1-1", odds="---")])
+    pr = parse_archive(_page(html))
+    assert pr.runners[0]["odds_win"] is None
+
+
+# --- 9〜10e: コーナー通過順 --------------------------------------------------
+
+def test_9_straight_course_no_corners():
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              corner_nos=[], include_corner_table=True,
+                              runners=[_runner(passage="13")])
+    pr = parse_archive(_page(html))
+    assert pr.race["corner_nos"] == []
+    assert pr.runners[0]["corners"] == []  # 通過列の "13" は採らない
+
+
+def test_10_empty_passage_is_null():
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              corner_nos=[1, 2, 3, 4],
+                              runners=[_runner(passage="")])
+    pr = parse_archive(_page(html))
+    assert pr.runners[0]["corners"] is None
+
+
+def test_10b_length_mismatch_row_kept_corners_null():
+    """D-044: 要素数不一致は行を棄却せず corners=NULL として取り込む。"""
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              corner_nos=[1, 2, 3, 4],
+                              runners=[_runner(passage="3-2")])
+    pr = parse_archive(_page(html))
+    assert len(pr.runners) == 1
+    assert pr.runners[0]["corners"] is None
+    assert any(r.reason == "corners_length_mismatch" for r in pr.rejected)
+
+
+def test_10c_two_corner_course():
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              corner_nos=[3, 4],
+                              runners=[_runner(passage="3-2")])
+    pr = parse_archive(_page(html))
+    assert pr.race["corner_nos"] == [3, 4]
+    assert pr.runners[0]["corners"] == [3, 2]
+
+
+def test_10d_dnf_empty_passage_is_normal():
+    """D-044: 完走しなかった馬の空 corners は正常。rejected_rows に乗らない。"""
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              corner_nos=[1, 2, 3, 4],
+                              runners=[_runner(finish="中", passage="")])
+    pr = parse_archive(_page(html))
+    assert pr.runners[0]["corners"] is None
+    assert pr.runners[0]["status"] == "競走中止"
+    assert len(pr.rejected) == 0
+
+
+def test_10e_unparsable_corner_header():
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              corner_nos=None, corner_row_labels=["謎コーナー"],
+                              runners=[_runner(passage="1-1")])
+    pr = parse_archive(_page(html))
+    assert pr.race["corner_nos"] is None
+    assert pr.runners[0]["corners"] is None
+    assert any(r.reason == "corner_header_unparsed" for r in pr.rejected)
+
+
+# --- 11: エンティティ同定は test_ids.py ------------------------------------
+# --- 12: キャッシュヒットは test_cache.py -----------------------------------
+
+
+# --- 直線競走・ダート・方向表記 ----------------------------------------------
+
+def test_dirt_and_direction_parsed():
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              surface="ダート", direction="左", distance=1600,
+                              corner_nos=[3, 4], runners=[_runner(passage="1-1")])
+    pr = parse_archive(_page(html))
+    assert pr.race["surface"] == "ダート"
+    assert pr.race["direction"] == "左"
+    assert pr.race["distance"] == 1600
+
+
+def test_header_fields_and_headcounts():
+    html = build_archive_html(
+        race_id=999, date_y=2024, date_m=3, date_d=10, course="中山", race_number=5,
+        surface="芝", direction="右", distance=1200, weather="曇", track_condition="稍重",
+        post_time="14:35", corner_nos=[3, 4],
+        runners=[_runner(finish="1", number=1, passage="1-1"),
+                 _runner(finish="中", number=2, passage="")],
+    )
+    pr = parse_archive(_page(html, race_id=999))
+    r = pr.race
+    assert (r["date"].year, r["date"].month, r["date"].day) == (2024, 3, 10)
+    assert r["course"] == "中山"
+    assert r["race_number"] == 5
+    assert r["weather"] == "曇"
+    assert r["track_condition"] == "稍重"
+    assert r["post_time"] == "14:35"
+    assert r["n_entries"] == 2
+    assert r["n_starters"] == 2  # 競走中止もゲートは出ている
+
+
+def test_empty_template_detected_no_race_table():
+    html = b"<html><body>no race data here</body></html>"
+    pr = parse_archive(_page(html))
+    assert pr.race["course"] is None
+    assert pr.runners == []
+
+
+# --- payouts / laps ---------------------------------------------------------
+
+def test_payouts_combination_normal_form():
+    html = build_archive_html(
+        race_id=1, date_y=2023, date_m=1, date_d=1, corner_nos=[1, 2, 3, 4],
+        runners=[_runner(passage="1-1-1-1")],
+        payouts=[
+            {"bet_type": "単勝", "combo": "5", "payout": 800, "popularity": 2},
+            {"bet_type": "馬連", "combo": "9 - 5", "payout": 690, "popularity": 3},
+            {"bet_type": "馬単", "combo": "5 → 9", "payout": 2330, "popularity": 6},
+            {"bet_type": "三連複", "combo": "9 - 5 - 3", "payout": 4700, "popularity": 12},
+            {"bet_type": "三連単", "combo": "5 → 9 → 3", "payout": 29810, "popularity": 79},
+        ],
+    )
+    pr = parse_archive(_page(html))
+    by_type = {p["bet_type"]: p for p in pr.payouts}
+    assert by_type["馬連"]["combination"] == [5, 9]        # 昇順に正規化
+    assert by_type["馬単"]["combination"] == [5, 9]        # 着順のまま
+    assert by_type["三連複"]["combination"] == [3, 5, 9]   # 昇順
+    assert by_type["三連単"]["combination"] == [5, 9, 3]   # 着順のまま
+    assert by_type["馬連"]["comb_key"] == "5-9"
+
+
+def test_laps_parsed_in_order():
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              corner_nos=[1, 2, 3, 4], runners=[_runner(passage="1-1-1-1")],
+                              laps=[12.6, 10.7, 12.0, 12.6])
+    pr = parse_archive(_page(html))
+    assert [l["furlong_no"] for l in pr.laps] == [1, 2, 3, 4]
+    assert [l["lap_sec"] for l in pr.laps] == [12.6, 10.7, 12.0, 12.6]
+
+
+# --- day_index ---------------------------------------------------------------
+
+def _day_index_entry(race_id: str, title: str, surface_text: str) -> str:
+    return (
+        f'<dl><dt>1R</dt><dd><a href="/race/{race_id}/" title="{title}">{title}</a>'
+        f'<br/><div>{surface_text}<br/></div></dd></dl>'
+    )
+
+
+def test_list_race_keys_jra_only():
+    body = (
+        '<html><head><meta charset="utf-8"></head><body>'
+        '<h3>中央</h3><div>'
+        + _day_index_entry("202305021201", "3歳未勝利", "ダ1600m")
+        + _day_index_entry("202308011201", "3歳未勝利", "芝1600m")
+        + "</div>"
+        + '<h3>地方</h3><div>'
+        + _day_index_entry("202336052801", "C2", "ダ850m")
+        + "</div></body></html>"
+    ).encode("utf-8")
+    keys = list_race_keys(_page(body, page_kind="day_index"))
+    assert keys == ["202305021201", "202308011201"]
+
+
+def test_list_race_keys_excludes_jump_races():
+    """D-025: 障害レースはスコープ外。day_index の距離表記 "障..." で弾く。"""
+    body = (
+        '<html><head><meta charset="utf-8"></head><body>'
+        '<h3>中央</h3><div>'
+        + _day_index_entry("202305021204", "3歳未勝利", "芝1600m")
+        + _day_index_entry("202308011204", "障害4歳以上未勝利", "障2910m")
+        + "</div></body></html>"
+    ).encode("utf-8")
+    keys = list_race_keys(_page(body, page_kind="day_index"))
+    assert keys == ["202305021204"]
+
+
+def test_list_race_keys_no_central_section():
+    body = "<html><body>no races today</body></html>".encode("utf-8")
+    assert list_race_keys(_page(body, page_kind="day_index")) == []
