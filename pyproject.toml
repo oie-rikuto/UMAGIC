@@ -23,3 +23,11 @@ build-backend = "uv_build"
 dev = [
     "pytest>=9.1.1",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# D-053: 実データ（data/umagic.duckdb）を要するテスト。R-017 によりデータは
+# コミットできないため CI では実行できない。手動で `pytest -m realdata`。
+markers = [
+    "realdata: 実データのDuckDBを要する。CIから除外し手動で実行する（D-053）",
+]

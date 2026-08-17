@@ -35,4 +35,6 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked
       - name: Run tests
-        run: uv run pytest -q
+        # D-053: 実データを要するテストは除外する。CI の実行環境には
+        # data/umagic.duckdb が存在しない（R-017 によりコミットできない）
+        run: uv run pytest -q -m "not realdata"
