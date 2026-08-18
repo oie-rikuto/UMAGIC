@@ -193,8 +193,9 @@
       完了条件: `F-701` が**過去レースの**人気で交絡を除去し、**対象レースの `odds_win` / `popularity` を参照しない**（`R-018`）。`F-703` が `affiliation` から遠征を判定する（`D-049`）
       完了: `src/umagic/features/f701.py`（人気帯=人気値そのものでの残差、二重のas-of累積）・`f702.py`（乗り替わり・騎乗経験回数）・`f703.py`（遠征フラグは `D-069` の対応表、主戦騎手フラグ）・`f704.py`（`F-202` と同型、`jockey_id`×コース・距離帯）
 
-- [ ] `F-8xx` 基礎・コースを実装する（`003-features.md` / `D-028`）
+- [x] `F-8xx` 基礎・コースを実装する（`003-features.md` / `D-028`）
       完了条件: `F-803` に天候・馬場状態が**含まれない**（`F-804` に分離）。`F-804` の `timing` が `当日`。`track_condition` が順序尺度に写る。`F-801` の分母が `n_starters`（`D-012`）
+      完了: `src/umagic/features/f801.py`（条件バケツ `(course,distance_band,n_starters,frame)`、`D-070`）・`f802.py`（`F-202`/`F-704`と同型、馬自身×コース・距離帯）・`f803.py`（季節は月から機械的に切る）・`f804.py`（`weather`/`weather_forecast`/`track_condition` を別列で出す。**`weather_forecast` は木曜、他は当日と `timing` が本来異なるが、`FeatureSpec` は1特徴量1`timing` の制約があり、レジストリへの実登録は未整理のまま残す（どの `F-xxx` もまだ実登録していないため `P-1` をブロックしない）**
 
 ### 完了確認
 
