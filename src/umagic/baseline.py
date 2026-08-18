@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 from datetime import date
 from typing import Literal
@@ -179,6 +180,100 @@ def race_ledger(
             rows.append((race_id, n_bets, len(hits), n_bets * 100, sum(hits)))
 
     return pl.DataFrame(rows, schema=_LEDGER_SCHEMA, orient="row")
+
+
+@dataclass(frozen=True)
+class ReturnMetrics:
+    """ベタ買い戦略の回収率（`005-baseline.md` 4節・5節）。"""
+
+    population: Population
+    strategy: Strategy
+    bet_type: BetType
+    n_races: int
+    n_bets: int
+    n_hits: int
+    stake_yen: int
+    payout_yen: int
+    roi: float
+    roi_ci_low: float
+    roi_ci_high: float
+
+
+DEFAULT_BOOTSTRAP_N = 10_000
+DEFAULT_SEED = 20260819
+
+
+def bootstrap_roi_ci(
+    ledger: pl.DataFrame, *, bootstrap_n: int = DEFAULT_BOOTSTRAP_N, seed: int = DEFAULT_SEED,
+) -> tuple[float, float]:
+    """`race_ledger()` の出力をレース単位で復元抽出し、回収率の95%CIを返す（`D-078`）。
+
+    パーセンタイル法。`seed` は `random.Random(seed)` を経由して各回の
+    `ledger.sample()` 呼び出し用の副シードを生成する。**`seed` を単純に
+    `seed + i` として毎回インクリメントしない** — 隣接するシード値
+    （`seed=1` と `seed=2` など）は `polars` の実装上ほぼ同じ抽出列を
+    生成し、パーセンタイル境界が偶然一致してしまう。`Random(seed)` を
+    経由すると、近い `seed` 同士でも副シード列は無相関になる。
+    同じ `(ledger, bootstrap_n, seed)` からは常に同じ結果が再現する（`R-021`）。
+    """
+    n = ledger.height
+    if n == 0:
+        return (float("nan"), float("nan"))
+
+    total_stake = ledger["stake_yen"].sum()
+    if n == 1:
+        roi = ledger["payout_yen"][0] / total_stake if total_stake else float("nan")
+        return (roi, roi)
+
+    rng = random.Random(seed)
+    rois: list[float] = []
+    for _ in range(bootstrap_n):
+        sub_seed = rng.randrange(2**32)
+        resampled = ledger.sample(n=n, with_replacement=True, seed=sub_seed)
+        stake = resampled["stake_yen"].sum()
+        payout = resampled["payout_yen"].sum()
+        rois.append(payout / stake if stake else 0.0)
+
+    rois.sort()
+    lo_idx = int(0.025 * bootstrap_n)
+    hi_idx = min(int(0.975 * bootstrap_n), bootstrap_n - 1)
+    return (rois[lo_idx], rois[hi_idx])
+
+
+def return_metrics(
+    conn: duckdb.DuckDBPyConnection,
+    race_ids: list[int],
+    *,
+    population: Population,
+    strategy: Strategy,
+    bet_type: BetType,
+    bootstrap_n: int = DEFAULT_BOOTSTRAP_N,
+    seed: int = DEFAULT_SEED,
+) -> ReturnMetrics:
+    """`race_ledger()` を集計し、ブートストラップCIを付けた `ReturnMetrics` を返す。"""
+    ledger = race_ledger(conn, race_ids, strategy=strategy, bet_type=bet_type)
+    n_races = ledger.height
+    if n_races == 0:
+        nan = float("nan")
+        return ReturnMetrics(
+            population=population, strategy=strategy, bet_type=bet_type,
+            n_races=0, n_bets=0, n_hits=0, stake_yen=0, payout_yen=0,
+            roi=nan, roi_ci_low=nan, roi_ci_high=nan,
+        )
+
+    n_bets = ledger["n_bets"].sum()
+    n_hits = ledger["n_hits"].sum()
+    stake = ledger["stake_yen"].sum()
+    payout = ledger["payout_yen"].sum()
+    roi = payout / stake if stake else float("nan")
+    ci_low, ci_high = bootstrap_roi_ci(ledger, bootstrap_n=bootstrap_n, seed=seed)
+
+    return ReturnMetrics(
+        population=population, strategy=strategy, bet_type=bet_type,
+        n_races=n_races, n_bets=n_bets, n_hits=n_hits,
+        stake_yen=stake, payout_yen=payout, roi=roi,
+        roi_ci_low=ci_low, roi_ci_high=ci_high,
+    )
 
 
 def target_races(

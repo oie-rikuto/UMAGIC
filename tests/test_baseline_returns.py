@@ -98,3 +98,29 @@ def test_scratched_horse_excluded_from_uniform_bets(conn):
 def test_empty_race_ids(conn):
     ledger = race_ledger(conn, [], strategy="favorite", bet_type="単勝")
     assert ledger.is_empty()
+
+
+def test_return_metrics_combines_ledger_and_ci(conn):
+    from umagic.baseline import return_metrics
+
+    _setup_race(conn)
+    m = return_metrics(
+        conn, [1], population="all", strategy="favorite", bet_type="単勝",
+        bootstrap_n=100, seed=1,
+    )
+    assert m.n_races == 1
+    assert m.n_bets == 1
+    assert m.n_hits == 1
+    assert m.stake_yen == 100
+    assert m.payout_yen == 250
+    assert m.roi == 2.5
+    assert m.roi_ci_low == m.roi_ci_high == 2.5  # 1レースのみなのでCIが縮退
+
+
+def test_return_metrics_empty_race_ids(conn):
+    from umagic.baseline import return_metrics
+
+    m = return_metrics(conn, [], population="all", strategy="favorite", bet_type="単勝")
+    assert m.n_races == 0
+    import math
+    assert math.isnan(m.roi)
