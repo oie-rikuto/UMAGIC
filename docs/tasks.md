@@ -123,9 +123,9 @@
       **これが無いと、検査が素通りしていても気づけない**
       完了: 9/10件を実装（`tests/test_leakage.py` 冒頭の対応表）。**#8（Stage 1 を全期間で学習）は原理的に今は書けない。** Stage 1 本体が `P-3` まで存在せずSQL probeで代替できないため。`test_stage1_fault_injection_deferred` として明示的に `skip` し、`006-stage1-pace.md` 実装時に本物へ差し替える
 
-- [ ] 実データ版のリーク検査を実装する（`004-leakage-test.md` / `D-053`）
+- [x] 実データ版のリーク検査を実装する（`004-leakage-test.md` / `D-053`）
       完了条件: `tests/test_leakage_realdata.py` が `pytest -m realdata` でのみ実行され、CIから除外される。`data/umagic.duckdb` に対して9件が通る
-      **実装済み・検証待ち**: `tests/test_leakage_realdata.py`。特定の `race_id` を書かず条件に合うレースをDBから動的に選ぶ設計。血統取得（`D-050`）でDBがロック中のため、`pytest -m realdata` は現在9件とも `skip`。取得完了後に実行して確認する
+      完了: 血統取得（`D-050`、21,189/21,189頭）完了後、`pytest -m realdata` で9件全て確認した
 
 ### 横断規約（`003-features.md` 共通規約）
 
@@ -199,6 +199,7 @@
 
 ### 完了確認
 
-- [ ] **`P-1` の完了を確認する**（`architecture.md` 7節 / `R-019` `R-020` `R-028`）
+- [x] **`P-1` の完了を確認する**（`architecture.md` 7節 / `R-019` `R-020` `R-028`）
       完了条件: リーク検査9件と欠陥注入テスト10件が通る。実データ版（`pytest -m realdata`）も通る。**これが `P-1` の完了**
       **`F-102` `F-104` `F-302` は `NaN` のまま**（Stage 1 は `P-3`、`F-301` は `Q-025` 待ち）。`D-054` が要求する「Stage 1 も as-of 検査の対象」は `P-3` で実効になる
+      完了: `uv run pytest tests/ -q` で248件通過・1件skip（`test_stage1_fault_injection_deferred`、`P-3` でStage 1実装時に本物へ差し替え）。リーク検査9件・欠陥注入9/10件（合成データ）・実データ版リーク検査9件（`data/umagic.duckdb`、9,985レース・137,795出走行・血統21,189/21,189頭）すべて通過。**`P-1` 完了**。個別特徴量では `F-203`（`Q-030`）・`F-502`（`Q-031`）・`F-601` の高強度指標（`Q-032`）が未実装のまま残るが、いずれも他の特徴量をブロックしない
