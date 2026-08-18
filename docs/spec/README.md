@@ -32,7 +32,7 @@ docs/spec/NNN-<名前>.md
 | `012-data-quality.md` | P-0 | 取り込んだデータの妥当性検査。`P-0` の完了条件 |
 | `019-incremental-update.md` | P-0 | 増分取得と、過去走集計の再計算範囲 |
 | `020-migration.md` | P-0 | スキーマ変更時の既存DBの移行手順 |
-| `003-features.md` | P-1 | 特徴量の実装仕様（`F-301` を除く。1本で書く: `D-052`） |
+| `003-features.md` | P-1 | 特徴量の実装仕様（`F-301` を除く。1本で書く: `D-052`）。**Draft** |
 | `013-track-variant.md` | P-1 | 馬場差推定（`F-301`）。混合効果モデル |
 | `017-feature-store.md` | P-1 | 特徴量の実体化と as-of 再現 |
 | `018-cold-start.md` | P-1 | 過去走を持たない馬（外国馬・地方馬）の扱い |
