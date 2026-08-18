@@ -160,8 +160,9 @@
       **`F-102` は Stage 1（`P-3`）の出力なので、`P-1` の時点では `F-104` も `NaN` になる**
       完了: `src/umagic/features/f104.py`。`build_features` の `feature_fns` には登録せず、`f102`/`f103`/`n_starters` を既に持つ `DataFrame` を受け取る純粋関数にした（`F-102` が存在しない `P-1` 時点では呼び出し側が列を用意できないため、`FeatureFn` として組み込む意味が無い）。テスト観点7はF-102を直接注入する合成データで検証
 
-- [ ] `F-303` 上がり3F関連を実装する（`003-features.md`）
+- [x] `F-303` 上がり3F関連を実装する（`003-features.md`）
       完了条件: `last_3f` の縮約平均と過去走でのレース内上がり順位が出る。`F-301` に依存しない
+      完了: `src/umagic/features/f303.py`。`last3f_all`/`last3f_recent`（`D-051`/`D-059`）と `last3f_rank_in_race`（縮約なし、単純平均）を実装。`window.py` の `full_and_recent` を複合キー（`[race_id, horse_id]`）対応に拡張した（同じ馬でも対象行ごとに履歴が異なるため）。「直近N走」は `last_3f` が記録されている過去走に限る（`F-101` の既存の扱いに合わせた）
 
 - [ ] `F-302` の接続点を定義する（`003-features.md` / `D-060`）
       完了条件: `attach_f302(df, horse_effects)` の型が定義され、`horse_effects` が空のとき列が `NaN`・指示子 `1` になる。**簡易版のフォールバックを実装しない**
