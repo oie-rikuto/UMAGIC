@@ -164,9 +164,10 @@
       完了条件: `last_3f` の縮約平均と過去走でのレース内上がり順位が出る。`F-301` に依存しない
       完了: `src/umagic/features/f303.py`。`last3f_all`/`last3f_recent`（`D-051`/`D-059`）と `last3f_rank_in_race`（縮約なし、単純平均）を実装。`window.py` の `full_and_recent` を複合キー（`[race_id, horse_id]`）対応に拡張した（同じ馬でも対象行ごとに履歴が異なるため）。「直近N走」は `last_3f` が記録されている過去走に限る（`F-101` の既存の扱いに合わせた）
 
-- [ ] `F-302` の接続点を定義する（`003-features.md` / `D-060`）
+- [x] `F-302` の接続点を定義する（`003-features.md` / `D-060`）
       完了条件: `attach_f302(df, horse_effects)` の型が定義され、`horse_effects` が空のとき列が `NaN`・指示子 `1` になる。**簡易版のフォールバックを実装しない**
       **`013-track-variant.md` が未作成のため、列は `NaN` のまま**（`Q-025`）
+      完了: `src/umagic/features/f302.py`。`(horse_id, as_of)` の完全一致で仮結合する（`013` 自体が未実装のため、asof結合が要るかなどの精緻な結合方法は未定・`Q-025`）
 
 - [ ] `F-202` / `F-203` 血統を実装する（`003-features.md` / `D-062`）
       完了条件: `003` のテスト観点13が通る（`sire_id IS NULL` で `NaN`・指示子 `1`）。条件別成績が `F-902` で縮約される。**embedding を作らない**
