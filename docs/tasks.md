@@ -226,8 +226,9 @@
       完了条件: `005` のテスト観点10・13が通る（同じ`seed`でビット完全一致、1レースのみでも例外を出さない）。リサンプリング単位がレースである（`D-078`）
       完了: `bootstrap_roi_ci()` と、`race_ledger()`と組み合わせて`ReturnMetrics`を作る`return_metrics()`。**実装中にバグを発見・修正**: 当初 `seed+i` で毎回シードを進めていたが、隣接するシード値（`seed=1`と`seed=2`）は`polars`の`sample()`でほぼ同じ抽出列を生成し、パーセンタイル境界が偶然一致していた（`test_different_seed_can_differ`で発覚）。`random.Random(seed)`を経由して副シードを生成する方式に修正した
 
-- [ ] 年別内訳とレポート出力を実装する（`005-baseline.md` 3節・6節 / `D-018` `R-027`）
+- [x] 年別内訳とレポート出力を実装する（`005-baseline.md` 3節・6節 / `D-018` `R-027`）
       完了条件: `005` のテスト観点14が通る（`by_era`の`n_races`合計が母集団全体と一致する）。`BaselineReport.to_markdown()` が信頼区間・検出力の注記（`g1`母集団）・封印除外件数を含む
+      完了: `by_era_breakdown()`（点推定のみ。年×母集団×戦略×券種の全組み合わせで10,000回のブートストラップを回すと実行時間が過大になるため、CIはトップレベルの`ReturnMetrics`のみが持つ）・`run_baseline()`・`BaselineReport.to_markdown()`
 
 ### 完了確認
 

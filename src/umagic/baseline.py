@@ -304,3 +304,169 @@ def target_races(
         kept = kept.filter(pl.col("grade") == "G1")
 
     return TargetRaces(races=kept.sort("race_id"), n_sealed_g1_excluded=n_sealed)
+
+
+_STRATEGIES: tuple[Strategy, ...] = ("favorite", "uniform")
+_BET_TYPES: tuple[BetType, ...] = ("単勝", "複勝", "ワイド")
+_POPULATIONS: tuple[Population, ...] = ("all", "g1")
+
+
+def _point_roi(ledger: pl.DataFrame) -> float:
+    """`race_ledger()` の出力から、ブートストラップを伴わない点推定の回収率を返す。"""
+    if ledger.is_empty():
+        return float("nan")
+    stake = ledger["stake_yen"].sum()
+    payout = ledger["payout_yen"].sum()
+    return payout / stake if stake else float("nan")
+
+
+def by_era_breakdown(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    today: date,
+    sealed_years: int = DEFAULT_SEALED_YEARS,
+) -> pl.DataFrame:
+    """年別（`YEAR(races.date)`）の内訳（`005-baseline.md` 3節 / `D-018` / `R-027`）。
+
+    **点推定のみを出す（ブートストラップCIは含まない）。** 年×母集団×戦略×
+    券種の全組み合わせで10,000回のリサンプリングを回すと実行時間が過大になる。
+    信頼区間はトップレベルの `ReturnMetrics`（`run_baseline` の `returns`）が持つ。
+    """
+    rows: list[tuple] = []
+    schema = [
+        "year", "population", "metric_kind", "metric_name", "strategy", "bet_type",
+        "n_races", "value",
+    ]
+
+    for population in _POPULATIONS:
+        tr = target_races(conn, population=population, today=today, sealed_years=sealed_years)
+        races = tr.races
+        if races.is_empty():
+            continue
+        races = races.with_columns(pl.col("date").dt.year().alias("year"))
+        for year in races["year"].unique().sort().to_list():
+            race_ids = races.filter(pl.col("year") == year)["race_id"].to_list()
+
+            pm = probability_metrics(conn, race_ids, population=population)
+            for metric_name, value in [
+                ("log_loss", pm.log_loss),
+                ("brier", pm.brier),
+                ("top1_hit_rate", pm.top1_hit_rate),
+                ("top3_hit_rate", pm.top3_hit_rate),
+            ]:
+                rows.append((year, population, "probability", metric_name, None, None, pm.n_races, value))
+
+            for strategy in _STRATEGIES:
+                for bet_type in _BET_TYPES:
+                    ledger = race_ledger(conn, race_ids, strategy=strategy, bet_type=bet_type)
+                    rows.append(
+                        (year, population, "return", "roi", strategy, bet_type, ledger.height, _point_roi(ledger))
+                    )
+
+    return pl.DataFrame(rows, schema=schema, orient="row")
+
+
+@dataclass(frozen=True)
+class BaselineReport:
+    """`run_baseline()` の出力（`005-baseline.md` 6節）。"""
+
+    generated_at: date
+    n_sealed_g1_excluded: int
+    probability: list[ProbabilityMetrics]
+    returns: list[ReturnMetrics]
+    by_era: pl.DataFrame
+
+    def to_markdown(self) -> str:
+        lines: list[str] = []
+        lines.append(f"# ベースラインレポート（{self.generated_at.isoformat()}）")
+        lines.append("")
+        lines.append(f"封印セットにより除外したG1: {self.n_sealed_g1_excluded}レース（`D-076`。開封回数には計上しない）")
+        lines.append("")
+
+        lines.append("## 確率指標")
+        lines.append("")
+        lines.append("| 母集団 | n_races | LogLoss | Brier | Top-1 | Top-3 |")
+        lines.append("|---|---|---|---|---|---|")
+        for pm in self.probability:
+            lines.append(
+                f"| {pm.population} | {pm.n_races} | {pm.log_loss:.4f} | {pm.brier:.4f} "
+                f"| {pm.top1_hit_rate:.3f} | {pm.top3_hit_rate:.3f} |"
+            )
+        lines.append("")
+
+        lines.append("## 回収率（信頼区間付き）")
+        lines.append("")
+        lines.append("| 母集団 | 戦略 | 券種 | n_races | roi | 95%CI |")
+        lines.append("|---|---|---|---|---|---|")
+        for rm in self.returns:
+            lines.append(
+                f"| {rm.population} | {rm.strategy} | {rm.bet_type} | {rm.n_races} "
+                f"| {rm.roi:.3f} | [{rm.roi_ci_low:.3f}, {rm.roi_ci_high:.3f}] |"
+            )
+        lines.append("")
+
+        for rm in self.returns:
+            if rm.population == "g1" and rm.n_races > 0:
+                se = 4 / (rm.n_races**0.5)
+                lines.append(
+                    f"**`g1` 母集団は開発用{rm.n_races}レースで検出力が限定的**"
+                    f"（単勝換算の標準誤差 ≈ {se:.0%}、`D-008` / `Q-033`）。参考値として扱う。"
+                )
+                break
+        lines.append("")
+
+        lines.append("## 年別内訳")
+        lines.append("")
+        lines.append("| 年 | 母集団 | 種別 | 指標 | 戦略 | 券種 | n_races | 値 |")
+        lines.append("|---|---|---|---|---|---|---|---|")
+        for row in self.by_era.iter_rows(named=True):
+            strategy = row["strategy"] or "-"
+            bet_type = row["bet_type"] or "-"
+            value = row["value"]
+            value_str = f"{value:.4f}" if value is not None else "NaN"
+            lines.append(
+                f"| {row['year']} | {row['population']} | {row['metric_kind']} "
+                f"| {row['metric_name']} | {strategy} | {bet_type} | {row['n_races']} | {value_str} |"
+            )
+
+        return "\n".join(lines) + "\n"
+
+
+def run_baseline(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    today: date,
+    sealed_years: int = DEFAULT_SEALED_YEARS,
+    bootstrap_n: int = DEFAULT_BOOTSTRAP_N,
+    seed: int = DEFAULT_SEED,
+) -> BaselineReport:
+    """ベースラインレポートを組み立てる（`005-baseline.md`）。"""
+    probability: list[ProbabilityMetrics] = []
+    returns: list[ReturnMetrics] = []
+    n_sealed_g1_excluded = 0
+
+    for population in _POPULATIONS:
+        tr = target_races(conn, population=population, today=today, sealed_years=sealed_years)
+        race_ids = tr.races["race_id"].to_list()
+        n_sealed_g1_excluded = tr.n_sealed_g1_excluded
+
+        probability.append(probability_metrics(conn, race_ids, population=population))
+
+        for strategy in _STRATEGIES:
+            for bet_type in _BET_TYPES:
+                returns.append(
+                    return_metrics(
+                        conn, race_ids, population=population, strategy=strategy,
+                        bet_type=bet_type, bootstrap_n=bootstrap_n, seed=seed,
+                    )
+                )
+
+    era = by_era_breakdown(conn, today=today, sealed_years=sealed_years)
+
+    return BaselineReport(
+        generated_at=today,
+        n_sealed_g1_excluded=n_sealed_g1_excluded,
+        probability=probability,
+        returns=returns,
+        by_era=era,
+    )
