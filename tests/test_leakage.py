@@ -7,6 +7,25 @@
 `F-xxx` の実装がまだ無いため、各原則を体現する最小の probe 関数
 （`FeatureFn` 互換）を都度定義する。特徴量を実装するたびに、その
 `F-xxx` を probe と置き換えて同じ検査に通すことで骨組みを再利用する。
+
+`004` の「テスト観点」10件との対応:
+
+| # | 仕込む欠陥 | 本ファイルの欠陥注入テスト |
+|---|---|---|
+| 1 | 過去集計を `<=` | `test_fault_past_aggregation_boundary_detected` |
+| 2 | 同日判定から `course` を外す | `test_fault_same_day_no_course_detected` |
+| 3 | 同日判定を `<=` | `test_fault_same_day_le_detected` |
+| 4 | 同日以降の成績混入 | `test_fault_future_form_detected` |
+| 5 | 対象レースの `time_sec` | `test_fault_target_race_outcome_detected` |
+| 6 | 対象レースの `odds_win` | `test_fault_target_race_odds_detected` |
+| 7 | `μ_global` を全期間で推定 | `test_fault_as_of_recomputation_detected` |
+| 8 | Stage 1 を全期間で学習 | **未実装**（下記 `test_stage1_fault_injection_deferred`） |
+| 9 | 暫定経路への当日特徴量混入 | `test_fault_deadline_violation_detected` |
+| 10 | 封印セットのG1を含める | `test_fault_sealed_set_read_detected` |
+
+**#8 は Stage 1 本体が無いと書けない。** Stage 1 は `architecture.md`
+7節で `P-3`。SQLの probe では代替できず（モデル学習そのものを模擬する
+必要がある）、`006-stage1-pace.md` の実装時に追加する。
 """
 
 from __future__ import annotations
@@ -14,6 +33,7 @@ from __future__ import annotations
 from datetime import date
 
 import polars as pl
+import pytest
 
 from tests.fixtures.leakage_fixture import (
     AS_OF_LATE,
@@ -378,3 +398,18 @@ def test_sealed_set_excludes_non_g1():
     conn = build_leakage_fixture_conn()
     # 20230101001 は grade=NULL（非G1）
     assert not is_sealed(TARGET_DATE, None, today=TARGET_DATE)
+
+
+# ---------------------------------------------------------------------------
+# 欠陥注入 #8（明示的な未実装の記録）
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skip(
+    reason="Stage 1（006-stage1-pace.md）が P-3 まで存在しないため、"
+           "「Stage 1 を全期間で学習する」欠陥を注入できない。004 のテスト観点 #8。"
+           "D-054 により Stage 1 も as-of 検査の対象と定めているが、SQL probe では"
+           "代替できず、実際のモデル学習ステップが要る。Stage 1 実装時にこのテストを"
+           "本物の欠陥注入テストに置き換える"
+)
+def test_stage1_fault_injection_deferred():
+    raise NotImplementedError

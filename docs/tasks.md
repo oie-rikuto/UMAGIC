@@ -95,30 +95,37 @@
 
 ### 土台
 
-- [ ] `FeatureSpec` と `FeatureRegistry` を実装する（`003-features.md` / `R-028`）
+- [x] `FeatureSpec` と `FeatureRegistry` を実装する（`003-features.md` / `R-028`）
       完了条件: 全 `F-xxx` が `timing` と `race_level` を持って登録され、属性を欠いたまま登録できない。`columns_for("暫定")` が `timing='当日'` の列を含まない（`D-028`）
+      完了: `src/umagic/features/registry.py`。`Q-019`（発走何分前か未確認）の特徴量は本命経路からも除外する既定動作にした
 
-- [ ] `build_features` の骨格を実装する（`003-features.md` / `004-leakage-test.md`）
+- [x] `build_features` の骨格を実装する（`003-features.md` / `004-leakage-test.md`）
       完了条件: `build_features(conn, as_of=D)` が `(race_id, horse_id)` で一意な `pl.DataFrame` を返す。特徴量列は0本でよい。同じ入力で2回呼んで**ビット完全一致**する（`D-055`）
+      完了: `src/umagic/features/build.py`。`race_ids` 未指定時は `date < as_of` のレースが対象
 
-- [ ] 集計順序の決定性を実装する（`003-features.md` / `D-055`）
+- [x] 集計順序の決定性を実装する（`003-features.md` / `D-055`）
       完了条件: 集約前に `(race_id, horse_id)` で整列している。行の投入順を変えても出力がビット一致する
+      完了: 基底集合を結合前後の両方で整列する
 
 ### リーク検査の骨組み（特徴量より先）
 
-- [ ] 合成 fixture を作る（`004-leakage-test.md` / `D-053`）
+- [x] 合成 fixture を作る（`004-leakage-test.md` / `D-053`）
       完了条件: `004` の「合成 fixture が持つべき性質」5項目をすべて含む（同日・同競馬場の連続R番号／同日・複数競馬場／同一馬の時系列複数出走／少走馬と多走馬の混在／期間をまたぐレース）。生HTMLを含まない（`R-017`）
       **規模は `Q-028` で未決。** まず最小構成で作り、実行時間を測ってから調整する
+      完了: `tests/fixtures/leakage_fixture.py`。11レース・15出走。5性質すべてを満たす最小構成。実行時間は現時点で問題にならない規模（テスト全体で2秒台）
 
-- [ ] リーク検査9件の骨組みを実装する（`004-leakage-test.md` / `R-020`）
+- [x] リーク検査9件の骨組みを実装する（`004-leakage-test.md` / `R-020`）
       完了条件: `tests/test_leakage.py` に9件の `test_` 関数が存在し、特徴量が0本の状態で全件通る。CIで `-m "not realdata"` で実行される
+      完了: 当初案（`feature_fns=[]` で自明に通す）より強い形にした。各原則を体現する最小 probe 関数を実装し、「正しい実装で通る」ことを実際に検証する。`feature_fns=[]` の自明ケースは `tests/test_features_build.py` で別途確認済み
 
-- [ ] 欠陥注入テストを実装する（`004-leakage-test.md`）
+- [x] 欠陥注入テストを実装する（`004-leakage-test.md`）
       完了条件: `004` の「テスト観点」10件それぞれで、欠陥を仕込むと該当検査が**落ちる**ことを確認する。欠陥を仕込まない状態では全件通る
       **これが無いと、検査が素通りしていても気づけない**
+      完了: 9/10件を実装（`tests/test_leakage.py` 冒頭の対応表）。**#8（Stage 1 を全期間で学習）は原理的に今は書けない。** Stage 1 本体が `P-3` まで存在せずSQL probeで代替できないため。`test_stage1_fault_injection_deferred` として明示的に `skip` し、`006-stage1-pace.md` 実装時に本物へ差し替える
 
 - [ ] 実データ版のリーク検査を実装する（`004-leakage-test.md` / `D-053`）
       完了条件: `tests/test_leakage_realdata.py` が `pytest -m realdata` でのみ実行され、CIから除外される。`data/umagic.duckdb` に対して9件が通る
+      **実装済み・検証待ち**: `tests/test_leakage_realdata.py`。特定の `race_id` を書かず条件に合うレースをDBから動的に選ぶ設計。血統取得（`D-050`）でDBがロック中のため、`pytest -m realdata` は現在9件とも `skip`。取得完了後に実行して確認する
 
 ### 横断規約（`003-features.md` 共通規約）
 
