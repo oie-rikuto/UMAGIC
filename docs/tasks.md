@@ -129,17 +129,21 @@
 
 ### 横断規約（`003-features.md` 共通規約）
 
-- [ ] `F-902` 縮約を実装する（`003-features.md` / `D-051`）
+- [x] `F-902` 縮約を実装する（`003-features.md` / `D-051`）
       完了条件: `θ = (n·x̄ + k·μ_global)/(n+k)` が `n=1` で `μ_global` に強く寄り、`n=100` でほぼ `x̄` になる。**`μ_global` が `as_of` までのデータのみで計算される**（`R-019`）
+      完了: `src/umagic/features/shrinkage.py`。`per_row_stat_before` は対象行ごとにその行自身の日付で母集団を切る（`D-054` の追記事項）
 
-- [ ] `F-901` レース内相対化を実装する（`003-features.md` / `D-021`）
+- [x] `F-901` レース内相対化を実装する（`003-features.md` / `D-021`）
       完了条件: `race_level=False` の特徴量が生値・`_z`・`_rank` の3列を出す。`race_level=True` の特徴量には `_z` `_rank` の列が**存在しない**。`race_std=0` のとき `_z` が `NaN`。分母は `n_starters`（`D-012`）
+      完了: `src/umagic/features/relative.py`。`race_level=True` への不適用は呼び出し側の責務（`relativize` 自体は `race_level` を知らない）
 
-- [ ] 欠損と指示子列を実装する（`003-features.md` / `D-058`）
+- [x] 欠損と指示子列を実装する（`003-features.md` / `D-058`）
       完了条件: 補完せず `NaN` を返す。構造的欠損で `<feature>_unavailable=1`、取得漏れで `0` になる。両者が区別できる
+      完了: `src/umagic/features/missing.py`。「構造的」の判定式は特徴量ごとに異なるため呼び出し側が渡す
 
-- [ ] 全履歴と直近N走の窓を実装する（`003-features.md` / `D-059`）
+- [x] 全履歴と直近N走の窓を実装する（`003-features.md` / `D-059`）
       完了条件: 集計系の特徴量が `_all` と `_recent` の両方を出す。`N` が設定値として外から与えられる
+      完了: `src/umagic/features/window.py`。`n_all` / `n_recent` も返し `F-902` にそのまま渡せる
 
 ### 特徴量（1つ足すごとにリーク検査が緑のままであること）
 
