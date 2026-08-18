@@ -45,6 +45,9 @@ def main() -> int:
     ap.add_argument("--to", dest="date_to", required=True, type=parse_date)
     ap.add_argument("--sleep", type=float, default=5.0,
                     help="D-014 条件2。5.0未満は指定できない")
+    ap.add_argument("--no-resume", action="store_true",
+                    help="取り込み済みのレースも作り直す。スキーマを変えた後の"
+                         "再構築に使う。キャッシュがあればネットワークは使わない")
     args = ap.parse_args()
 
     db_path = Path(args.db)
@@ -80,7 +83,8 @@ def main() -> int:
 
     try:
         outcomes = ingest_range(conn, fetcher, source, args.date_from, args.date_to,
-                                resume=True, on_day=on_day, on_race_error=on_race_error)
+                                resume=not args.no_resume,
+                                on_day=on_day, on_race_error=on_race_error)
     except RobotsDisallowed as e:
         print(f"[中断] {e}", file=sys.stderr, flush=True)
         return 2

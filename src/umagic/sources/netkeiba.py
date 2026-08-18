@@ -279,6 +279,19 @@ def _parse_affiliation(cell_html: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _parse_link_name(cell_html: str) -> str | None:
+    """リンクの表示名を取る。D-057 の騎手名・調教師名。
+
+    調教師欄は先頭に所属マーカー（`[東]` など）が付くため、タグを外した
+    セル全体ではなく **`<a>` のテキスト**を採る。
+    """
+    m = re.search(r"<a\b[^>]*>(.*?)</a>", cell_html, re.S)
+    if not m:
+        return None
+    name = html.unescape(re.sub(r"<.*?>", "", m.group(1))).strip()
+    return name or None
+
+
 def _parse_id_link(cell_html: str) -> str | None:
     m = re.search(r'href="/(?:horse|jockey/result/recent|trainer/result/recent)/(\w+)/?"',
                   cell_html)
@@ -365,6 +378,8 @@ def _parse_finish_table(
             "race_id": race_id, "horse_source_key": horse_key, "number": number,
             "frame": int(cells[idx["枠番"]]) if "枠番" in idx and cells[idx["枠番"]] else None,
             "jockey_source_key": jockey_key, "trainer_source_key": trainer_key,
+            "jockey_name": (_parse_link_name(tds[idx["騎手"]]) if "騎手" in idx else None),
+            "trainer_name": (_parse_link_name(tds[idx["調教師"]]) if "調教師" in idx else None),
             "horse_name": re.sub(r"<.*?>", "", tds[idx["馬名"]]).strip() if "馬名" in idx else None,
             "weight_carried": float(cells[idx["斤量"]]) if cells[idx.get("斤量", -1)] else None,
             "horse_weight": hw, "weight_diff": wd, "age": age, "sex": sex,

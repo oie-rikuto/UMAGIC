@@ -445,3 +445,27 @@ def test_pedigree_foreign_ancestor_key():
     ped = parse_pedigree(_ped_page(body))
     assert ped["sire_key"] == "2012104668"
     assert ped["damsire_key"] == "1998101554"
+
+
+# --- D-057: 騎手名・調教師名 ------------------------------------------------
+
+def test_jockey_and_trainer_names_parsed():
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              corner_nos=[1, 2, 3, 4],
+                              runners=[_runner(passage="1-1-1-1")])
+    r = parse_archive(_page(html)).runners[0]
+    assert r["jockey_name"] == "00000"      # fixture はキーを表示名にしている
+    assert r["trainer_name"] == "00000"
+    assert r["jockey_source_key"] == "00000"
+
+
+def test_trainer_name_excludes_affiliation_marker():
+    """調教師欄は先頭に [東] 等が付く。名前に混ぜない（D-057）。"""
+    from umagic.sources.netkeiba import _parse_link_name
+    cell = '[西]<a href="/trainer/result/recent/01070/" title="堀宣行">堀宣行</a>'
+    assert _parse_link_name(cell) == "堀宣行"
+
+
+def test_link_name_absent_is_null():
+    from umagic.sources.netkeiba import _parse_link_name
+    assert _parse_link_name("[東]") is None

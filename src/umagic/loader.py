@@ -39,6 +39,34 @@ def _is_empty(parsed: ParsedRace) -> bool:
     return not parsed.runners and parsed.race.get("course") is None
 
 
+def _resolve_person(
+    conn: duckdb.DuckDBPyConnection,
+    entity_type: str,
+    table: str,
+    id_column: str,
+    source: str,
+    fetched_at,
+    source_key: str | None,
+    name: str | None,
+) -> int | None:
+    """騎手・調教師を同定し、`jockeys` / `trainers` に登録する（`D-057`）。
+
+    名前が取れなかった場合は行を作らない。`name` が `NOT NULL` のため、
+    空の行を作ると後から名前で引けない状態が固定される。
+    """
+    if not source_key:
+        return None
+    internal_id = resolve(conn, entity_type, source, source_key, fetched_at)
+    if name and conn.execute(
+        f"SELECT 1 FROM {table} WHERE {id_column} = ?", [internal_id],
+    ).fetchone() is None:
+        conn.execute(
+            f"INSERT INTO {table} VALUES (?, ?, ?, ?)",
+            [internal_id, name, source, fetched_at],
+        )
+    return internal_id
+
+
 def _write_race(conn: duckdb.DuckDBPyConnection, source: str, parsed: ParsedRace) -> None:
     race = parsed.race
     race_id = race["race_id"]
@@ -78,10 +106,12 @@ def _write_race(conn: duckdb.DuckDBPyConnection, source: str, parsed: ParsedRace
                 "INSERT INTO horses VALUES (?, ?, NULL, NULL, NULL, NULL, ?, ?)",
                 [horse_id, r["horse_name"], source, fetched_at],
             )
-        jockey_id = (resolve(conn, "jockey", source, r["jockey_source_key"], fetched_at)
-                    if r["jockey_source_key"] else None)
-        trainer_id = (resolve(conn, "trainer", source, r["trainer_source_key"], fetched_at)
-                     if r["trainer_source_key"] else None)
+        jockey_id = _resolve_person(
+            conn, "jockey", "jockeys", "jockey_id", source, fetched_at,
+            r["jockey_source_key"], r.get("jockey_name"))
+        trainer_id = _resolve_person(
+            conn, "trainer", "trainers", "trainer_id", source, fetched_at,
+            r["trainer_source_key"], r.get("trainer_name"))
 
         conn.execute(
             """

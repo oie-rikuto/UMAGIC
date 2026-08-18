@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | Phase | P-0 |
-| 関連決定 | `D-009` `D-010` `D-011` `D-012` `D-020` `D-026` `D-029` `D-034` `D-035` `D-036` `D-043` `D-044` `D-046` `D-048` `D-049` `D-050` |
-| 関連特徴量 | `F-101` `F-102` `F-2xx` `F-501` `F-502` `F-503` `F-703` `F-801` `F-803` `F-804` `F-901` |
+| 関連決定 | `D-009` `D-010` `D-011` `D-012` `D-020` `D-026` `D-029` `D-034` `D-035` `D-036` `D-043` `D-044` `D-046` `D-048` `D-049` `D-050` `D-057` |
+| 関連特徴量 | `F-101` `F-102` `F-2xx` `F-501` `F-502` `F-503` `F-7xx` `F-801` `F-803` `F-804` `F-901` |
 | 関連要件 | `R-011` `R-012` `R-013` `R-014` `R-015` |
 | 状態 | Draft |
 
@@ -25,12 +25,12 @@
 |---|---|
 | 方言 | DuckDB（`D-036`） |
 | 日付 | `DATE`。時刻は `TIME` または `TIMESTAMP` |
-| 全テーブル共通列 | `source` `fetched_at` を持ち、いずれも `NOT NULL`（`D-026`）。**対象は本仕様の7テーブル**（`D-046`） |
+| 全テーブル共通列 | `source` `fetched_at` を持ち、いずれも `NOT NULL`（`D-026`）。**対象は本仕様の9テーブル**（`D-046` / `D-057`） |
 | `source` の値 | `netkeiba_jra` / `netkeiba_nar` / `jrdb` |
 | 主キー | 内部ID（連番）。ソース側のIDは `source_ids` で紐づける（`D-035`） |
 | 可変長データ | LIST 型（`D-036`） |
 
-**作成順**: `source_ids` → `horses` → `races` → `runners` → `payouts` → `odds` → `laps`。外部キーの依存による。
+**作成順**: `source_ids` → `horses` → `jockeys` → `trainers` → `races` → `runners` → `payouts` → `odds` → `laps`。外部キーの依存による。
 
 以下のDDLは DuckDB 1.4.5 で実行し、全テーブルが作成できること、および「テスト観点」の各制約が意図どおり違反を拒否することを確認済み。**`races.corner_nos`（`D-043`）を加えた形で再実行済み**（2026-08-16）。
 
@@ -228,6 +228,30 @@ CREATE TABLE horses (
 **血統3列は `archive` ページから取得できない（`D-050`）。** 馬ごとの血統ページを別途引いて埋める。`002-loader.md` の `horse_ped` を参照。
 
 **`birth` は当面 `NULL` のままとする（`D-050`）。** 馬齢は `runners.age` が持ち、`F-xxx` のいずれも生年月日そのものを要求しない。
+
+### jockeys / trainers
+
+```sql
+CREATE TABLE jockeys (
+    jockey_id   BIGINT    PRIMARY KEY,
+    name        VARCHAR   NOT NULL,
+    source      VARCHAR   NOT NULL,
+    fetched_at  TIMESTAMP NOT NULL
+);
+
+CREATE TABLE trainers (
+    trainer_id  BIGINT    PRIMARY KEY,
+    name        VARCHAR   NOT NULL,
+    source      VARCHAR   NOT NULL,
+    fetched_at  TIMESTAMP NOT NULL
+);
+```
+
+名前は `archive` の着順表から取る（`D-057`）。**騎手ページを引かない。**
+
+**`runners.jockey_id` / `trainer_id` に外部キーを張らない（`D-057`）。** `horse_id` は `REFERENCES horses(horse_id)` を持つが、こちらは持たせない。同定は `source_ids`（`D-035`）が一元化する。
+
+`F-701`〜`F-704` が使う騎手・厩舎の成績は、これらのテーブルではなく **`runners` の集計**から求める。通算成績を列として持たない。
 
 ### payouts / odds
 

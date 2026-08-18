@@ -1,7 +1,8 @@
 """中間スキーマ（`docs/spec/001-schema.md`）。
 
-ソース非依存の7テーブルを定義する（`D-009`）。作成順は外部キーの依存による:
-`source_ids` → `horses` → `races` → `runners` → `payouts` → `odds` → `laps`。
+ソース非依存の9テーブルを定義する（`D-009` / `D-057`）。作成順は外部キーの依存による:
+`source_ids` → `horses` → `jockeys` → `trainers` → `races` → `runners` →
+`payouts` → `odds` → `laps`（`D-057`）。
 
 運用テーブル（`fetch_log` / `rejected_rows` / `quality_runs` / `quality_findings`）は
 ここでは定義しない。`source` / `fetched_at` を持たないため対象外（`D-046`）。
@@ -35,6 +36,22 @@ DDL_STATEMENTS: list[str] = [
         sire_id     BIGINT,
         dam_id      BIGINT,
         damsire_id  BIGINT,
+        source      VARCHAR   NOT NULL,
+        fetched_at  TIMESTAMP NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE jockeys (
+        jockey_id   BIGINT    PRIMARY KEY,
+        name        VARCHAR   NOT NULL,
+        source      VARCHAR   NOT NULL,
+        fetched_at  TIMESTAMP NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE trainers (
+        trainer_id  BIGINT    PRIMARY KEY,
+        name        VARCHAR   NOT NULL,
         source      VARCHAR   NOT NULL,
         fetched_at  TIMESTAMP NOT NULL
     )
@@ -157,7 +174,8 @@ DDL_STATEMENTS: list[str] = [
 
 # 作成順どおりのテーブル名。テストと検査で参照する。
 TABLE_NAMES: list[str] = [
-    "source_ids", "horses", "races", "runners", "payouts", "odds", "laps",
+    "source_ids", "horses", "jockeys", "trainers",
+    "races", "runners", "payouts", "odds", "laps",
 ]
 
 
