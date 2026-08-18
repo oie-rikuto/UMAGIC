@@ -106,6 +106,81 @@ def probability_metrics(
     )
 
 
+Strategy = Literal["favorite", "uniform"]
+
+_PURCHASE_ELIGIBLE_SQL = """
+SELECT race_id, number, popularity
+FROM runners
+WHERE race_id = ANY(?) AND status NOT IN ('出走取消', '競走除外')
+ORDER BY race_id, number
+"""
+
+_PAYOUTS_SQL = """
+SELECT race_id, comb_key, payout
+FROM payouts
+WHERE race_id = ANY(?) AND bet_type = ?
+"""
+
+_LEDGER_SCHEMA = {
+    "race_id": pl.Int64, "n_bets": pl.Int64, "n_hits": pl.Int64,
+    "stake_yen": pl.Int64, "payout_yen": pl.Int64,
+}
+
+
+def race_ledger(
+    conn: duckdb.DuckDBPyConnection, race_ids: list[int], *, strategy: Strategy, bet_type: BetType,
+) -> pl.DataFrame:
+    """`race_id` ごとの購入点数・的中数・投資額・払戻額を返す（`005-baseline.md` 4節）。
+
+    的中判定は `payouts` の `comb_key` に行が存在するかで行う（`D-072`）。
+    着順から複勝・ワイドの成立条件を再実装しない。取消・除外（`D-073`）は
+    購入対象に含めない。
+    """
+    if not race_ids:
+        return pl.DataFrame(schema=_LEDGER_SCHEMA)
+
+    runners = conn.execute(_PURCHASE_ELIGIBLE_SQL, [race_ids]).pl()
+    payouts = conn.execute(_PAYOUTS_SQL, [race_ids, bet_type]).pl()
+    payout_map: dict[tuple[int, str], int] = {
+        (row["race_id"], row["comb_key"]): row["payout"] for row in payouts.iter_rows(named=True)
+    }
+
+    rows: list[tuple] = []
+    if not runners.is_empty():
+        for key, group in runners.group_by("race_id", maintain_order=True):
+            race_id = key[0] if isinstance(key, tuple) else key
+            group = group.sort("number")
+            numbers = group["number"].to_list()
+            popularities = dict(zip(numbers, group["popularity"].to_list()))
+
+            if strategy == "favorite":
+                favorite = next((n for n, p in popularities.items() if p == 1), None)
+                targets = [favorite] if favorite is not None else []
+            else:
+                targets = numbers
+
+            if bet_type in ("単勝", "複勝"):
+                comb_keys = [str(n) for n in targets]
+            else:  # ワイド
+                if strategy == "favorite":
+                    comb_keys = (
+                        [f"{min(targets[0], o)}-{max(targets[0], o)}"
+                         for o in numbers if o != targets[0]]
+                        if targets else []
+                    )
+                else:
+                    comb_keys = [
+                        f"{min(a, b)}-{max(a, b)}"
+                        for i, a in enumerate(numbers) for b in numbers[i + 1:]
+                    ]
+
+            n_bets = len(comb_keys)
+            hits = [payout_map[(race_id, k)] for k in comb_keys if (race_id, k) in payout_map]
+            rows.append((race_id, n_bets, len(hits), n_bets * 100, sum(hits)))
+
+    return pl.DataFrame(rows, schema=_LEDGER_SCHEMA, orient="row")
+
+
 def target_races(
     conn: duckdb.DuckDBPyConnection,
     *,
