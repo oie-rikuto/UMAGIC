@@ -1,6 +1,6 @@
 # 実装仕様書
 
-`001-schema.md` / `002-loader.md` / `003-features.md` / `004-leakage-test.md` / `005-baseline.md` / `006-stage1-pace.md` / `007-stage2-ranker.md` / `012-data-quality.md` / `014-training-pipeline.md` が存在する（いずれも `Draft`）。以降は着手する Phase の分だけ追加する。
+`001-schema.md` / `002-loader.md` / `003-features.md` / `004-leakage-test.md` / `005-baseline.md` / `006-stage1-pace.md` / `007-stage2-ranker.md` / `012-data-quality.md` / `014-training-pipeline.md` / `015-calibration.md` が存在する（いずれも `Draft`）。以降は着手する Phase の分だけ追加する。
 
 ## 位置づけ
 
@@ -41,7 +41,7 @@ docs/spec/NNN-<名前>.md
 | `014-training-pipeline.md` | **P-3** | fold生成、`sample_weight`、乱数シードと再現性、モデル保存形式。**Draft**（`006`/`007` より先に固める） |
 | `006-stage1-pace.md` | P-3 | レース質予測モデル。**Draft**（目的変数は `D-087`。`Q-007` を解決した） |
 | `007-stage2-ranker.md` | P-3 | 適性照合モデル。**Draft**（カテゴリの扱いは `D-092`。`D-062` が委ねた判断） |
-| `015-calibration.md` | P-3 | G1での確率校正（`D-003` の3番目の手段） |
+| `015-calibration.md` | P-3 | G1での確率校正（`D-003` の3番目の手段）。**Draft**（温度スケーリング: `D-097`） |
 | `008-probability.md` | P-4 | Plackett-Luce展開 |
 | `009-betting.md` | P-4 | 期待値計算と賭け金決定 |
 | `010-backtest.md` | P-4 | 検証手順とレポート様式 |
