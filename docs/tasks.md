@@ -265,17 +265,21 @@
 
 ### 学習パイプライン（`014-training-pipeline.md`）
 
-- [ ] fold 生成を実装する（`014-training-pipeline.md` / `D-079` `D-080` `R-022`）
+- [x] fold 生成を実装する（`014-training-pipeline.md` / `D-079` `D-080` `R-022`）
       完了条件: `014` のテスト観点1〜8が通る（fold数7・`train_end < valid_start`・`train_years` で expanding/sliding が切り替わる・封印G1が学習と検証の両方から除かれる・**封印期間の非G1は学習に現れる**・同じ `seed` で fold の `seed` が一致・`seed+i` のような連番にならない・`min_train_years<3` が `ValueError`）
+      完了: `src/umagic/training.py` の `Fold`/`make_folds()`。3年分のデータでは `Q-033` どおり fold が0本になることもテストで固定した
 
-- [ ] `sample_weight` を実装する（`014-training-pipeline.md` / `D-081` `D-003`）
+- [x] `sample_weight` を実装する（`014-training-pipeline.md` / `D-081` `D-003`）
       完了条件: `014` のテスト観点9・10が通る（クラス別重みが適用され、辞書に無いクラスが `1.0` にフォールバックする）。**JpnIのキーは無いまま**（`Q-034`）
+      完了: `sample_weights()`。`"JpnI"` を仮のクラス名として渡し、辞書に無くても例外にならず `1.0` になることを確認した
 
-- [ ] クロスフィッティングの分割を実装する（`014-training-pipeline.md` / `D-086`）
+- [x] クロスフィッティングの分割を実装する（`014-training-pipeline.md` / `D-086`）
       完了条件: `014` のテスト観点11が通る（`n_blocks` 個のブロックが時系列順に並び、重複せず学習期間を覆う）。**ランダム分割にしない**（`D-054` / 原則7）
+      完了: `cross_fit_blocks()`。日数が `n_blocks` に満たない場合は `ValueError`（仕様に無い防御的な追加）
 
-- [ ] モデルの保存・読み込みを実装する（`014-training-pipeline.md` / `D-082` `R-021`）
+- [x] モデルの保存・読み込みを実装する（`014-training-pipeline.md` / `D-082` `R-021`）
       完了条件: `014` のテスト観点12・13が通る（`meta.json` の `feature_names` が順序込みで一致し、列順が違うと `ValueError`）。`git rev-parse HEAD` と `uv.lock` のSHA-256が記録される
+      完了: `save_model()`/`load_model()`/`verify_feature_order()`/`git_commit()`/`uv_lock_sha256()`。**`verify_feature_order()` は仕様の関数一覧に無かった追加**（「読み込み時に入力の列順と突き合わせる」という仕様文を満たすには、`load_model()` 単体は入力列を知らないため別関数が要ると判断した）。`save_model()` は `git_commit`/`uv_lock_sha256` を自動注入しない純粋なシリアライザにし、値の注入は呼び出し側（`006`/`007`）の責務にした
 
 ### Stage 1（`006-stage1-pace.md`）
 
