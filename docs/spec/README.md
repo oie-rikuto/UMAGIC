@@ -1,6 +1,6 @@
 # 実装仕様書
 
-`001-schema.md` / `002-loader.md` / `003-features.md` / `004-leakage-test.md` / `005-baseline.md` / `012-data-quality.md` / `014-training-pipeline.md` が存在する（いずれも `Draft`）。以降は着手する Phase の分だけ追加する。
+`001-schema.md` / `002-loader.md` / `003-features.md` / `004-leakage-test.md` / `005-baseline.md` / `006-stage1-pace.md` / `012-data-quality.md` / `014-training-pipeline.md` が存在する（いずれも `Draft`）。以降は着手する Phase の分だけ追加する。
 
 ## 位置づけ
 
@@ -39,7 +39,7 @@ docs/spec/NNN-<名前>.md
 | `004-leakage-test.md` | P-1 | リーク検査テストの仕様。**Draft**（`003` に as_of 入口を要求する: `D-054`） |
 | `005-baseline.md` | P-2 | ベースラインモデルの定義。**Draft**（`014` に依存しない: `D-075`） |
 | `014-training-pipeline.md` | **P-3** | fold生成、`sample_weight`、乱数シードと再現性、モデル保存形式。**Draft**（`006`/`007` より先に固める） |
-| `006-stage1-pace.md` | P-3 | レース質予測モデル |
+| `006-stage1-pace.md` | P-3 | レース質予測モデル。**Draft**（目的変数は `D-087`。`Q-007` を解決した） |
 | `007-stage2-ranker.md` | P-3 | 適性照合モデル |
 | `015-calibration.md` | P-3 | G1での確率校正（`D-003` の3番目の手段） |
 | `008-probability.md` | P-4 | Plackett-Luce展開 |
