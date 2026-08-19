@@ -257,7 +257,7 @@
 
 - [ ] 10年分の取り込みを完了し、`fail` が0件であることを確認する（`012-data-quality.md` / `Q-033`）
       **ブロック中: `Q-033`**（バックグラウンドで取得中）
-      完了条件: 2015-2024の全レースが取り込まれ、品質検査の `fail` が0件。血統取得も完了する。`014` の fold が6本生成できる（検証2018〜2023）
+      完了条件: 2015-2024の全レースが取り込まれ、品質検査の `fail` が0件。血統取得も完了する。`014` の fold が**7本**生成できる（検証2018〜2024。ただし2024の検証期間はG1が全て封印内で0件、2023は約16競走のみ。`D-080`）
 
 - [x] `lightgbm` を依存に追加する（`D-042`）
       完了条件: `uv add lightgbm` が成功し、`uv.lock` がコミットされる。`uv run python -c "import lightgbm"` が通る。**`D-042` はスタックとして選定済みだが `pyproject.toml` に入っていない**
@@ -266,7 +266,7 @@
 ### 学習パイプライン（`014-training-pipeline.md`）
 
 - [ ] fold 生成を実装する（`014-training-pipeline.md` / `D-079` `D-080` `R-022`）
-      完了条件: `014` のテスト観点1〜8が通る（fold数6・`train_end < valid_start`・`train_years` で expanding/sliding が切り替わる・封印G1が学習と検証の両方から除かれる・**封印期間の非G1は学習に現れる**・同じ `seed` で fold の `seed` が一致・`seed+i` のような連番にならない・`min_train_years<3` が `ValueError`）
+      完了条件: `014` のテスト観点1〜8が通る（fold数7・`train_end < valid_start`・`train_years` で expanding/sliding が切り替わる・封印G1が学習と検証の両方から除かれる・**封印期間の非G1は学習に現れる**・同じ `seed` で fold の `seed` が一致・`seed+i` のような連番にならない・`min_train_years<3` が `ValueError`）
 
 - [ ] `sample_weight` を実装する（`014-training-pipeline.md` / `D-081` `D-003`）
       完了条件: `014` のテスト観点9・10が通る（クラス別重みが適用され、辞書に無いクラスが `1.0` にフォールバックする）。**JpnIのキーは無いまま**（`Q-034`）

@@ -230,7 +230,7 @@ def run_walk_forward(...) -> pl.DataFrame:
 
 | # | 入力 | 期待 |
 |---|---|---|
-| 1 | 2015-2024のデータ、既定値 | fold数が6（検証2018〜2023）。各 fold で `train_end < valid_start` |
+| 1 | 2015-2024のデータ、既定値 | fold数が**7**（検証2018〜2024）。各 fold で `train_end < valid_start`（`D-080`） |
 | 2 | `train_years=3` | 各 fold の `train_start` が `valid_start` の3年前。expanding にならない |
 | 3 | `train_years=None` | 全 fold の `train_start` が同じ（対象データの最初の日） |
 | 4 | 封印期間内のG1 | どの fold の学習・検証にも現れない（`D-079`） |
