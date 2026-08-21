@@ -19,7 +19,7 @@ from pathlib import Path
 import duckdb
 import polars as pl
 
-from umagic.sealed import is_sealed, sealed_range
+from umagic.sealed import is_sealed
 
 DEFAULT_SEALED_YEARS = 3
 DEFAULT_MIN_TRAIN_YEARS = 3
@@ -213,3 +213,78 @@ def uv_lock_sha256(repo_root: Path | None = None) -> str | None:
     if not lock_path.exists():
         return None
     return hashlib.sha256(lock_path.read_bytes()).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# walk-forward の実行（6節 / D-083）
+# ---------------------------------------------------------------------------
+
+_WALK_FORWARD_SCHEMA = {
+    "race_id": pl.Int64, "horse_id": pl.Int64, "fold_index": pl.Int64,
+    "y_true": pl.Float64, "y_pred": pl.Float64,
+}
+_WALK_FORWARD_REQUIRED_COLS = {"race_id", "horse_id", "y_true", "y_pred"}
+
+
+def run_walk_forward(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    predict_fold,
+    today: date,
+    train_years: int | None = None,
+    min_train_years: int = DEFAULT_MIN_TRAIN_YEARS,
+    sealed_years: int = DEFAULT_SEALED_YEARS,
+    seed: int = DEFAULT_SEED,
+) -> pl.DataFrame:
+    """walk-forward を実行し、全 fold の検証予測を縦に積んだ `DataFrame` を返す（6節）。
+
+    列: `race_id, horse_id, fold_index, y_true, y_pred`。**指標は計算しない**
+    （`D-083`）。LogLoss / Brier / 回収率の計算は `010-backtest.md` の責務。
+
+    `predict_fold(conn, fold) -> pl.DataFrame`（列: `race_id, horse_id, y_true,
+    y_pred`）は呼び出し側が渡す。**Stage 1 のクロスフィッティング
+    （`006-stage1-pace.md` / `D-086`）・Stage 2 の学習（`007-stage2-ranker.md`）・
+    確率校正（`015-calibration.md`）を1つの fold についてどう組み合わせて
+    検証期間の予測を作るかは、本関数の外側（実際の学習スクリプト）の責務と
+    する。** `014-training-pipeline.md` 自身の6節の型シグネチャが
+    `run_walk_forward(...)` とパラメータを明示していない（3モジュールを
+    束ねる具体的な組み立て方を指定していない）ため、この関数はその組み立て
+    を差し替え可能な依存として受け取る設計にした。
+
+    `(race_id, horse_id)` が fold をまたいで重複していれば `ValueError`。
+    """
+    folds = make_folds(
+        conn, today=today, train_years=train_years, min_train_years=min_train_years,
+        sealed_years=sealed_years, seed=seed,
+    )
+
+    frames: list[pl.DataFrame] = []
+    seen_keys: set[tuple[int, int]] = set()
+
+    for fold in folds:
+        pred = predict_fold(conn, fold)
+
+        missing = _WALK_FORWARD_REQUIRED_COLS - set(pred.columns)
+        if missing:
+            raise ValueError(
+                f"predict_fold の戻り値に列が無い（fold {fold.index}）: {sorted(missing)}"
+            )
+
+        keys = set(zip(pred["race_id"].to_list(), pred["horse_id"].to_list()))
+        overlap = keys & seen_keys
+        if overlap:
+            raise ValueError(
+                f"fold {fold.index} で (race_id, horse_id) が他の fold と重複した: "
+                f"{sorted(overlap)[:5]}"
+            )
+        seen_keys |= keys
+
+        frames.append(
+            pred.select(["race_id", "horse_id", "y_true", "y_pred"])
+            .with_columns(pl.lit(fold.index, dtype=pl.Int64).alias("fold_index"))
+        )
+
+    if not frames:
+        return pl.DataFrame(schema=_WALK_FORWARD_SCHEMA)
+
+    return pl.concat(frames).select(list(_WALK_FORWARD_SCHEMA.keys()))

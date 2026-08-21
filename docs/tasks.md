@@ -323,8 +323,9 @@
 
 ### walk-forward の実行
 
-- [ ] walk-forward の実行を実装する（`014-training-pipeline.md` / `D-083` `R-022`）
+- [x] walk-forward の実行を実装する（`014-training-pipeline.md` / `D-083` `R-022`）
       完了条件: `014` のテスト観点14が通る（`fold_index` が全 fold ぶん含まれ、`(race_id, horse_id)` が fold をまたいで重複しない）。**指標は計算せず**、全 fold の予測を積んだ `DataFrame` を返す（`D-083`）
+      完了: `src/umagic/training.py` の `run_walk_forward()`。**`predict_fold(conn, fold) -> DataFrame` を呼び出し側から差し替え可能な依存として受け取る設計にした**（`014` 自身の6節が `run_walk_forward(...)` のパラメータを明示しておらず、Stage 1 のクロスフィッティング・Stage 2 の学習・確率校正を1 foldについてどう束ねるかを指定していないため）。fold をまたぐ `(race_id, horse_id)` の重複と、`predict_fold` の戻り値の列欠落をどちらも `ValueError` にした（仕様に無い防御的な追加）
 
 - [ ] `Q-036` を実データで確認する（`007-stage2-ranker.md` / `Q-036`）
       完了条件: 実データで Stage 2 を学習し、`softmax(score)` のレース内最大値とエントロピーを、`005-baseline.md` の市場確率の同じ統計量と比較する。**飽和または均一化が確認されたら `D-095` を見直す**
