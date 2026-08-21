@@ -298,14 +298,17 @@
 
 ### Stage 2（`007-stage2-ranker.md`）
 
-- [ ] ラベルと学習母集団を実装する（`007-stage2-ranker.md` / `D-093` `D-094`）
+- [x] ラベルと学習母集団を実装する（`007-stage2-ranker.md` / `D-093` `D-094`）
       完了条件: `007` のテスト観点3〜7が通る（`1,2,3,4着`→`3,2,1,0`・1着同着2頭が両方`3`・**`競走中止` が `label=0` で学習に含まれる**・`出走取消` が学習と推論のどちらにも現れない・`group` の合計が学習行数と一致）
+      完了: `src/umagic/stage2.py` の `build_labels()`/`race_group()`
 
-- [ ] カテゴリの丸めを実装する（`007-stage2-ranker.md` / `D-092` `R-019`）
+- [x] カテゴリの丸めを実装する（`007-stage2-ranker.md` / `D-092` `R-019`）
       完了条件: `007` のテスト観点8〜10が通る（`min_count` 未満が `other_code` に落ちる・検証期間にのみ現れるカテゴリが `other_code` に落ちて例外にならない・**丸め表の作成が検証期間の行を数えていない**）
+      完了: `build_category_mappings()`/`apply_category_mappings()`。**`null`（`sire_id`欠損など）は`other_code`に丸めずnullのまま残す**（`D-058`。LightGBMのネイティブ欠損分岐に委ねる。仕様の表には明記されていなかった判断）
 
-- [ ] Stage 2 の学習と出力を実装する（`007-stage2-ranker.md` / `D-095` `R-002` `R-003`）
+- [x] Stage 2 の学習と出力を実装する（`007-stage2-ranker.md` / `D-095` `R-002` `R-003`）
       完了条件: `007` のテスト観点1・2・11・12・14・15が通る（`win_prob` のレース内合計が `1.0±1e-6`・**全特徴量が `NaN` の馬にも確率が付く**・全欠損列が `feature_names` に残る・同じ `seed` でビット完全一致・`meta.json` に `inner_logloss` と `inner_ndcg3` の両方・同レースの全出走行が同じ `sample_weight`）
+      完了: `fit_stage2()`/`predict_win_prob()`/`race_metrics()`。`lambdarank`のearly stoppingにレース内softmax後のLogLossを使うカスタム`feval`を実装（`first_metric_only=True`で選択指標に）。`deterministic`/`force_row_wise`/`num_threads=1`で`R-021`を満たす。**`predict_win_prob()`に`horse_id`引数を追加した**（仕様の型シグネチャに無いが、出力が`horse_id`列を持つと仕様書自身が書いており、`x`/`race_id`だけでは復元できないため）。**観点12・13（全欠損列が`feature_names`に残る／`build_features()`の出力に`odds_win`等が無い）は`003-features.md`の`build_features()`側（入力特徴量の組み立て）の責務とし、本タスクの範囲外にした**（`007`自身の型シグネチャに組み立て関数が無く、既存の`P-1`テストが別途保証する）
 
 ### 確率校正（`015-calibration.md`）
 
