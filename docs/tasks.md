@@ -284,14 +284,17 @@
 
 ### Stage 1（`006-stage1-pace.md`）
 
-- [ ] Stage 1 の目的変数を実装する（`006-stage1-pace.md` / `D-087` `D-091`）
+- [x] Stage 1 の目的変数を実装する（`006-stage1-pace.md` / `D-087` `D-091`）
       完了条件: `006` のテスト観点1〜7が通る（`[12.0]*10` で `0.0`・前半が速いと正・遅いと負・**ラップ本数12本と13本で1ハロンあたりに揃う**・`laps` が無いレースと3本以下のレースが `build_target()` に現れない・`laps` が無いレースでも推論できる）
+      完了: `src/umagic/stage1.py` の `build_target()`。観点4は2400m(12本、一律12.0秒)と2500m(13本、1本目6.0秒＝100m分)が同じペースで`f102_actual=0.0`に揃うことを実測し、`D-087`の除数修正が効いていることを直接確認した
 
-- [ ] Stage 1 の入力を実装する（`006-stage1-pace.md` / `D-089`）
+- [x] Stage 1 の入力を実装する（`006-stage1-pace.md` / `D-089`）
       完了条件: `006` のテスト観点8・9・12・13が通る（`F-101` 全馬欠損で `f101_n_missing = n_starters`・**「逃げ馬1頭＋差し17頭」と「先行6頭」で `f101_mean` が同値でも `f101_min`/`f101_q25` が異なる**・`laps` 由来の列を含まない・`odds_win`/`popularity` を含まない）
+      完了: `build_inputs()`。`F-101`の集約対象は`D-094`と同じ母集団（出走取消・競走除外を除く）にした
 
-- [ ] Stage 1 のモデルを実装する（`006-stage1-pace.md` / `D-088` `D-090`）
+- [x] Stage 1 のモデルを実装する（`006-stage1-pace.md` / `D-088` `D-090`）
       完了条件: `006` のテスト観点10・11・14・15が通る（`track_condition` 欠損で推論できる・同じ `seed` でビット完全一致・fold の学習期間より後のレースが対象に入らない・`meta.json` に `n_excluded_no_laps` が残る）。`Stage1Model` Protocol を満たす LightGBM 回帰の実装が既定
+      完了: `LightGBMStage1Model`（`categorical_feature`は自前で整数コード化。`deterministic`/`force_row_wise`/`num_threads=1`で`R-021`を満たす）。**観点14は実装中にテスト設計の誤りを発見した**: `compute_f101`（`003`）は`as_of`引数をSQL内で使わず、各行自身のレース日付が過去走の境界になる。`as_of`を固定して対象レース自身の日付を変える形に直し、境界が正しく機能することを確認した
 
 ### Stage 2（`007-stage2-ranker.md`）
 
