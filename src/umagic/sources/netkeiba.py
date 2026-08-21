@@ -231,9 +231,11 @@ def _parse_corner_nos(text: str) -> tuple[list[int] | None, str | None]:
 # ---------------------------------------------------------------------------
 
 # D-048: 出走取消の表記「取」は P-0 の3年分取り込み（2022〜2024年、
-# 137,575出走行）で220件確認した。失格の表記は3年間で1件も観測されず
-# Q-023 に残る
-_STATUS_MAP: dict[str, str] = {"中": "競走中止", "除": "競走除外", "取": "出走取消"}
+# 137,575出走行）で220件確認した。失格の表記「失」は10年分拡張取り込み
+# （2015〜2021年）で1件確認した（202005050104、Q-023 を解決）
+_STATUS_MAP: dict[str, str] = {
+    "中": "競走中止", "除": "競走除外", "取": "出走取消", "失": "失格",
+}
 
 
 def _cells(row_html: str) -> list[str]:
@@ -253,7 +255,7 @@ def _parse_status(raw: str) -> tuple[str | None, int | None]:
         return _STATUS_MAP[raw], None
     if re.match(r"^\d+$", raw):
         return "出走", int(raw)
-    return None, None  # 出走取消・失格など未確認の表記（Q-023）
+    return None, None  # _STATUS_MAP に無い未確認の表記
 
 
 def _parse_weight(raw: str) -> tuple[int | None, int | None]:

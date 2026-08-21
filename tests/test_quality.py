@@ -273,10 +273,12 @@ def test_rejected_rate_year_from_source_key(conn):
 
 
 def test_rejected_rate_group_surfaces_unknown_markers(conn):
-    """Q-023: 未知の着順マーカーは `raw` まで内訳に出て、実物が特定できる。
+    """未知の着順マーカーは `raw` まで内訳に出て、実物が特定できる。
 
-    `raw` は合成データ（`失` は実際に Q-023 で未確認のまま残る失格の表記。
-    もう一方はグルーピングの区別を確認するための架空の値）。
+    `rejected_rows` への直接投入であり `parse_archive` を経由しないため、
+    `raw` の値自体が実際に未知マーカーとして扱われるかどうかは無関係
+    （`失` は10年分拡張取り込みで実例が見つかり `Q-023` は解決済み、
+    `D-034` の `_STATUS_MAP` に追加済み。ここでは単なる架空データ）。
     """
     _clean_race(conn, race_id=1, n=1, race_number=1)
     for reason, raw in (("unknown_finish_marker", "失"),

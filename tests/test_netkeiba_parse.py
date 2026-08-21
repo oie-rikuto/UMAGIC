@@ -55,14 +55,27 @@ def test_3_scratched_marker():
 
 
 def test_4_unknown_marker_rejected():
-    """失格の表記は Q-023 のとおり3年分の実データでも1件も観測されておらず未確認。"""
+    """`_STATUS_MAP` に無い表記は棄却され `rejected_rows` に落ちる。"""
     html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
                               corner_nos=[1, 2, 3, 4],
-                              runners=[_runner(finish="失", passage="")])
+                              runners=[_runner(finish="?", passage="")])
     pr = parse_archive(_page(html))
     assert len(pr.runners) == 0
     assert len(pr.rejected) == 1
     assert pr.rejected[0].reason == "unknown_finish_marker"
+
+
+def test_4b_disqualification_marker():
+    """D-034: 失格は `失` の1文字。10年分拡張取り込み（2015〜2021年）で
+    実例を1件確認した（`202005050104`、`Q-023` を解決）。実際に走った馬
+    （タイム・通過順を持つ）が失格になる形で、着差欄は空になる。"""
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              corner_nos=[1, 2, 3, 4],
+                              runners=[_runner(finish="失", passage="7-7-8")])
+    pr = parse_archive(_page(html))
+    assert pr.runners[0]["status"] == "失格"
+    assert pr.runners[0]["finish_pos"] is None
+    assert len(pr.rejected) == 0
 
 
 def test_3b_scratched_marker():
