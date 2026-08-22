@@ -327,6 +327,16 @@
       完了条件: `014` のテスト観点14が通る（`fold_index` が全 fold ぶん含まれ、`(race_id, horse_id)` が fold をまたいで重複しない）。**指標は計算せず**、全 fold の予測を積んだ `DataFrame` を返す（`D-083`）
       完了: `src/umagic/training.py` の `run_walk_forward()`。**`predict_fold(conn, fold) -> DataFrame` を呼び出し側から差し替え可能な依存として受け取る設計にした**（`014` 自身の6節が `run_walk_forward(...)` のパラメータを明示しておらず、Stage 1 のクロスフィッティング・Stage 2 の学習・確率校正を1 foldについてどう束ねるかを指定していないため）。fold をまたぐ `(race_id, horse_id)` の重複と、`predict_fold` の戻り値の列欠落をどちらも `ValueError` にした（仕様に無い防御的な追加）
 
+- [x] `predict_fold` の結線（orchestration層）を実装する（`006` `007` `014` `015` / `D-100`）
+      完了条件: `003-features.md` の全特徴量（`F-203`/`F-502` 除く。未実装のため）+ `F-102`/`F-104`/`F-302` を組み立て、Stage 1 クロスフィッティング（`D-086`）→ Stage 2 学習・校正データ作成（`D-098`）→ `run_walk_forward()` 経由の検証期間予測、まで例外なく通しで走る。合成データ（複数年・複数頭・血統・騎手/調教師の重複履歴）でのスモークテストで確認する
+      完了: `src/umagic/orchestration.py`。`Stage2FoldRunner.predict_fold()` が本体。クロスフィット用サブモデルの inner 検証省略と、校正を `run_walk_forward()` の外で適用する設計は `D-100` に記録。`class_weights`/`min_count` の暫定値は `D-101`。`stage2._CATEGORY_COLS` を血統ID以外のカテゴリ列（`f602_prev_grade`/`f803_*`/`f804_*`）まで拡張した（実際に全特徴量を組み立てて初めて判明した、文字列型のまま渡すと `lightgbm` がエラーになる列）。`R-023` 判定用の最小実装として `run_p3_completion_check()` も置いた（`010-backtest.md` 未作成のためのつなぎ）
+      完了: `tests/test_orchestration.py`（6件）・`tests/fixtures/orchestration_fixture.py`。合成データでの通しテストの過程で `races.grade`（文字列）が誤って特徴量行列に混入する実装ミスを発見・修正した
+      完了: `tests/test_leakage.py` の欠陥注入 #8（「Stage 1 を全期間で学習」）を実装した。`006-stage1-pace.md` 実装時から skip のまま残っていたテスト観点。`umagic.stage1` を直接使い、学習期間に含まれない未来レース（distance=3600m という他に存在しない値と、極端な `f102_actual` を持たせる）を学習データに含めた場合と含めない場合で、同じ distance のクエリへの予測が変わることを確認する
+
+- [ ] `class_weights`/カテゴリ丸め閾値のハイパーパラメータ探索を実装する（`D-081` `D-092` `D-051` `D-059` / `D-101`）
+      **ブロック中: `Q-033`**（10年分の取り込み未完了。実データでの探索が前提）
+      完了条件: fold ごとの inner 検証（`D-084`）で複数候補を比較し、`class_weights`・`D-092` の `min_count`・`F-902` の `k`・`F-101`等の窓 `N` の既定値を決める。決めた値と根拠を `D-081`/`D-092`/`D-051`/`D-059` に追記する
+
 - [ ] `Q-036` を実データで確認する（`007-stage2-ranker.md` / `Q-036`）
       完了条件: 実データで Stage 2 を学習し、`softmax(score)` のレース内最大値とエントロピーを、`005-baseline.md` の市場確率の同じ統計量と比較する。**飽和または均一化が確認されたら `D-095` を見直す**
 

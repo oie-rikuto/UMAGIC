@@ -2137,3 +2137,39 @@ inner 検証（`D-084` の学習期間末尾1年）を使う案は out-of-sample
 **影響**: `015-calibration.md` の適用範囲を規定する。`010-backtest.md` のレポートで `all` 母集団の指標に「未校正」の注記を付ける。`R-023`（A判定）はG1で判定するため、校正済みの値で判定される。
 
 ---
+
+## D-100 orchestration層（`predict_fold`）はクロスフィット用サブモデルに inner 検証を使わず、校正は `run_walk_forward()` の外で適用する
+
+**状態**: Accepted
+
+**決定**: `006-stage1-pace.md` / `007-stage2-ranker.md` / `014-training-pipeline.md` / `015-calibration.md` を実際に結線する `src/umagic/orchestration.py`（`Stage2FoldRunner.predict_fold`）について、以下の2点を決める。いずれも各仕様書が「呼び出し側（orchestration層）の責務」として明示的に外に出していた事項。
+
+**1. クロスフィット用サブモデルには `D-084` のネスト検証を適用しない。**
+
+`cross_fit_blocks()` の同じ4分割を Stage 1 の out-of-fold `F-102` 作成（`D-086`）と Stage 2 自身の校正データ作成（`D-098`）の両方で使う。これらのサブモデル（fold あたり Stage 1 が `n_blocks` 回、Stage 2 の校正用が `n_blocks` 回）は、`D-084` の inner 検証（学習期間末尾1年）を個別には適用せず、**fold 全体で学習する「本番」の Stage 2 モデル1本だけが inner 検証でラウンド数（`best_iteration`）を選び、サブモデルはそのラウンド数を固定で流用する**（`early_stopping_rounds` をそのラウンド数より大きく設定し、早期終了を発火させない）。Stage 1 のサブモデル（`LightGBMStage1Model`）はそもそも `num_boost_round=50` 固定で inner 検証を持たない実装になっており、これと対称になる。
+
+**2. `run_walk_forward()` に渡す `predict_fold` は校正前の生スコアを返す。校正は呼び出しの後で、G1の行にだけ別途適用する。**
+
+`predict_fold` が保持する fold ごとの `Calibrator`（`fold_calibrators`）を使い、`apply_g1_calibration()` が `run_walk_forward()` の出力のうち G1 の行だけを校正し直す。`all` 母集団の指標は `run_walk_forward()` の生出力をそのまま使う。
+
+**根拠**:
+
+1について: `cross_fit_blocks()` の境界と `fold.inner_valid_start`（学習期間末尾1年）は独立に決まる。学習期間が短い初期 fold（`min_train_years=3` のとき3年）では、4分割の1ブロックが inner 検証区間（末尾1年）の大半と重なり、「そのブロックを除いた rest」から inner 検証区間が事実上消える。サブモデルごとに独自の inner 検証区間を作る案（`rest` の中でさらに末尾を切る）は技術的には可能だが、3段ネストになり複雑さに見合わない。サブモデルは校正データ・`F-102` を作るための**診断目的の使い捨てモデル**であり、ラウンド数のわずかな最適性より、本番モデルとの整合（同じデータ規模には同じラウンド数を使う）を優先した。
+
+2について: `run_walk_forward()` の出力スキーマは `race_id, horse_id, fold_index, y_true, y_pred` の1列で固定（`014-training-pipeline.md` 6節、既存実装）であり、`D-099`（校正は `g1` 母集団にのみ適用）と両立しない。`run_walk_forward()` 自身のスキーマを母集団ごとに複数の `y_pred` を持つ形に変更する案は、`014` が既に固定した契約を壊し、`training.py` の既存テスト（`tests/test_training_walkforward.py`）が前提にしている形と食い違う。`010-backtest.md`（`P-4`、未作成）が指標計算を正式に引き取るまで、`run_p3_completion_check()`（`R-023` の A判定のみに答える最小実装）がこのつなぎを担う。
+
+**影響**: `src/umagic/orchestration.py` の実装を規定する。`006-stage1-pace.md` / `007-stage2-ranker.md` / `014-training-pipeline.md` / `015-calibration.md` 自体の文言は変更しない（いずれも結線を外に出す設計だったため）。`010-backtest.md` を書くときは、この最小実装（校正の後掛け適用）を正式な設計として引き継ぐか見直すかを判断すること。
+
+---
+
+## D-101 `sample_weight` の `class_weights` と `D-092` の `min_count` は、実データでのハイパーパラメータ探索が未着手のため暫定値を使う
+
+**状態**: Accepted
+
+**決定**: `src/umagic/orchestration.py` の `Stage2FoldRunner` は、`D-081` が「本決定で固定しない」とした `class_weights` に `{"G1": 5.0, "G2": 3.0, "G3": 2.0, "L": 1.5}`（`014-training-pipeline.md` の `meta.json` 例と同じ値）を、`D-092` が同様に未確定とした低頻度カテゴリの丸め閾値 `min_count` に `20` を、それぞれ暫定の既定値として使う。
+
+**根拠**: `D-081`/`D-092`/`D-051`/`D-059` はいずれも「`P-3` のハイパーパラメータ探索で決める」としているが、その探索（`D-084` の inner 検証を使った複数候補の比較）は本決定の時点で未実装であり、`Q-033`（10年分の取り込み未完了）により実データでの探索自体も着手できない。`Stage2FoldRunner` は wiring が正しく動くことの確認（結線のスモークテスト、`Q-036`/`Q-037` の実データ確認）を先に済ませるためのものであり、探索の実装を待つと結線自体の検証が止まる。
+
+**影響**: `R-023`（A判定）で LogLoss が市場確率を下回らなかった場合、**これらの暫定値が原因である可能性を最初に疑うこと。** ハイパーパラメータ探索を実装するまでは、`run_p3_completion_check()` の結果を「探索済みの上限」ではなく「暫定値での下限」として読む。`docs/tasks.md` にハイパーパラメータ探索の実装タスクを追加する。
+
+---

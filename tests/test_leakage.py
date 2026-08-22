@@ -19,18 +19,21 @@
 | 5 | 対象レースの `time_sec` | `test_fault_target_race_outcome_detected` |
 | 6 | 対象レースの `odds_win` | `test_fault_target_race_odds_detected` |
 | 7 | `μ_global` を全期間で推定 | `test_fault_as_of_recomputation_detected` |
-| 8 | Stage 1 を全期間で学習 | **未実装**（下記 `test_stage1_fault_injection_deferred`） |
+| 8 | Stage 1 を全期間で学習 | `test_fault_stage1_full_period_training_detected` |
 | 9 | 暫定経路への当日特徴量混入 | `test_fault_deadline_violation_detected` |
 | 10 | 封印セットのG1を含める | `test_fault_sealed_set_read_detected` |
 
-**#8 は Stage 1 本体が無いと書けない。** Stage 1 は `architecture.md`
-7節で `P-3`。SQLの probe では代替できず（モデル学習そのものを模擬する
-必要がある）、`006-stage1-pace.md` の実装時に追加する。
+**#8 は SQL の probe では代替できない**（モデル学習そのものを模擬する
+必要がある）ため、`umagic.stage1` を直接使う。`orchestration.py` の
+`stage1_fit_full()` が実際に行っているとおり、学習に渡す `race_ids` を
+fold の学習期間（`train_start`〜`train_end`）に絞ることが対策であり、
+絞り忘れると「学習期間より後のレース」の情報がモデルのパラメータに
+混入する。
 """
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 import polars as pl
 import pytest
@@ -401,15 +404,97 @@ def test_sealed_set_excludes_non_g1():
 
 
 # ---------------------------------------------------------------------------
-# 欠陥注入 #8（明示的な未実装の記録）
+# 欠陥注入 #8（原則7 / D-054）: Stage 1 を全期間で学習
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skip(
-    reason="Stage 1（006-stage1-pace.md）が P-3 まで存在しないため、"
-           "「Stage 1 を全期間で学習する」欠陥を注入できない。004 のテスト観点 #8。"
-           "D-054 により Stage 1 も as-of 検査の対象と定めているが、SQL probe では"
-           "代替できず、実際のモデル学習ステップが要る。Stage 1 実装時にこのテストを"
-           "本物の欠陥注入テストに置き換える"
-)
-def test_stage1_fault_injection_deferred():
-    raise NotImplementedError
+_STAGE1_FETCHED_AT = datetime(2026, 8, 22, tzinfo=timezone.utc)
+
+
+def _insert_stage1_race(
+    conn, race_id: int, race_date: date, *, distance: int, n_starters: int, laps: list[float],
+) -> None:
+    conn.execute(
+        "INSERT INTO races (race_id, date, course, race_number, distance, surface, "
+        "n_entries, n_starters, source, fetched_at) VALUES "
+        "(?, ?, '東京', 1, ?, '芝', ?, ?, 'netkeiba_jra', ?)",
+        [race_id, race_date, distance, n_starters, n_starters, _STAGE1_FETCHED_AT],
+    )
+    for i, lap in enumerate(laps, start=1):
+        conn.execute(
+            "INSERT INTO laps VALUES (?, ?, ?, 'netkeiba_jra', ?)",
+            [race_id, i, lap, _STAGE1_FETCHED_AT],
+        )
+    for slot in range(n_starters):
+        horse_id = race_id * 100 + slot
+        if not conn.execute("SELECT 1 FROM horses WHERE horse_id=?", [horse_id]).fetchone():
+            conn.execute(
+                "INSERT INTO horses VALUES (?, ?, NULL, NULL, NULL, NULL, 'netkeiba_jra', ?)",
+                [horse_id, f"馬{horse_id}", _STAGE1_FETCHED_AT],
+            )
+        conn.execute(
+            "INSERT INTO runners (race_id, horse_id, number, status, finish_pos, corners, "
+            "source, fetched_at) VALUES (?, ?, ?, '出走', ?, [1,2,3,4], 'netkeiba_jra', ?)",
+            [race_id, horse_id, slot + 1, slot + 1, _STAGE1_FETCHED_AT],
+        )
+
+
+def test_fault_stage1_full_period_training_detected():
+    """`race_ids` を fold の学習期間に絞らずに Stage 1 を学習すると、
+
+    学習期間より後（=未来）のレースの情報がモデルに混入し、それが
+    予測に現れることを示す。`distance=3600m`（他に存在しない値）の
+    未来レースだけに極端な `f102_actual` を持たせ、同じ `distance` の
+    別レース（学習期間内には存在しない、予測専用のクエリ）への予測が
+    「未来レースを学習に含めたかどうか」で変わることを確認する。
+    """
+    from umagic.stage1 import LightGBMStage1Model, build_inputs, build_target
+
+    conn = build_leakage_fixture_conn()
+
+    # 学習期間（fold.train_start〜train_end に相当）: 通常の距離・通常のラップ
+    train_ids = []
+    for i in range(6):
+        rid = 90_000_000 + i
+        _insert_stage1_race(
+            conn, rid, date(2015, 1, 1 + i), distance=2000, n_starters=2,
+            laps=[12.0, 11.8, 12.1, 11.9],
+        )
+        train_ids.append(rid)
+
+    # 未来レース（fold.valid_start 以降に相当）。他に存在しない distance=3600m と、
+    # 極端な f102_actual になるラップ（前半が極端に遅く、上がりが極端に速い）を持たせる
+    future_id = 90_000_900
+    _insert_stage1_race(
+        conn, future_id, date(2024, 1, 1), distance=3600, n_starters=2,
+        laps=[30.0, 30.0, 30.0, 30.0, 30.0, 30.0, 30.0, 30.0, 30.0, 30.0, 30.0, 30.0,
+              30.0, 30.0, 30.0, 3.0, 3.0, 3.0],
+    )
+
+    # 予測専用のクエリレース: distance=3600m だが学習期間・未来レースのどちらにも
+    # 含まれない、まったく別の race_id（実運用の「まだ結果が無い対象レース」に相当）
+    query_id = 90_000_999
+    _insert_stage1_race(
+        conn, query_id, date(2018, 6, 1), distance=3600, n_starters=2, laps=[],
+    )
+
+    as_of = date(2018, 1, 1)
+
+    def _fit_and_predict(race_ids_for_training: list[int]) -> float:
+        target = build_target(conn, race_ids_for_training)
+        x = build_inputs(conn, target["race_id"].to_list(), as_of=as_of)
+        merged = x.join(target.select(["race_id", "f102_actual"]), on="race_id", how="inner")
+        model = LightGBMStage1Model()
+        model.fit(
+            merged.drop(["race_id", "f102_actual"]), merged["f102_actual"],
+            sample_weight=None, seed=1,
+        )
+        query_x = build_inputs(conn, [query_id], as_of=as_of)
+        return float(model.predict(query_x.drop("race_id"))[0])
+
+    # 正しい実装: 学習期間のみ（未来レースを含めない）
+    correct_pred = _fit_and_predict(train_ids)
+
+    # 欠陥注入: 「fold で絞る」を忘れ、未来レースまで学習に含める
+    leaky_pred = _fit_and_predict(train_ids + [future_id])
+
+    assert correct_pred != pytest.approx(leaky_pred, abs=1e-6)

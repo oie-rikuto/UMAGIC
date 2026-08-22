@@ -20,7 +20,15 @@ import duckdb
 import numpy as np
 import polars as pl
 
-_CATEGORY_COLS = ["sire_id", "damsire_id", "jockey_id", "trainer_id"]
+_CATEGORY_COLS = [
+    "sire_id", "damsire_id", "jockey_id", "trainer_id",
+    # 003-features.md 由来のカテゴリ列（血統ID以外）。orchestration.py が
+    # 全特徴量を組み立てる際に、文字列型のまま LightGBM に渡すとエラーに
+    # なる列がここに集まる（`D-092` の丸め処理をそのまま流用する）
+    "f602_prev_grade",
+    "f803_surface", "f803_direction", "f803_race_class", "f803_weight_rule", "f803_season",
+    "f804_weather", "f804_weather_forecast",
+]
 
 
 @dataclass(frozen=True)
