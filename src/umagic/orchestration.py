@@ -192,59 +192,67 @@ def _race_ids_in_range(
 # Stage 1: クロスフィッティング（D-086）
 # ---------------------------------------------------------------------------
 
-def stage1_oof_and_full(
+def stage1_fit_all(
     conn: duckdb.DuckDBPyConnection, fold: Fold, train_ids: list[int], *,
     n_blocks: int = DEFAULT_N_BLOCKS,
-) -> pl.DataFrame:
-    """学習期間の全レースについて `F-102` を返す（`race_id, f102`）。
+) -> tuple[pl.DataFrame, LightGBMStage1Model]:
+    """学習期間ぶんの Stage 1 を1回のクエリでまとめて処理する（`D-086`）。
 
-    学習期間の行は out-of-fold（クロスフィット、`D-086`）。この戻り値には
-    検証期間の `f102` を含まない（呼び出し側が学習期間全体で学習した
-    モデルを別途 `predict_f102()` する）。`train_ids` は呼び出し側が
-    確定済みの学習期間レースID（封印G1を除いたもの）を渡す。
+    `stage1_build_target()`/`stage1_build_inputs()` は対象レース自身の
+    過去走だけを見る、行ごとに独立な計算である（他のレースが同じ
+    バッチに含まれるかに依存しない）。したがって学習期間全体で1回だけ
+    呼び、クロスフィットの `n_blocks` 個のブロックにはその結果を
+    スライスして与えれば、ブロックの数だけ同じ高コストな SQL
+    （`F-101` の相関自己結合を含む）を再実行せずに済む
+    （元は fold あたり `n_blocks + 1` 回呼んでいた）。
+
+    戻り値: `(学習期間の out-of-fold F-102, 学習期間全体で学習したモデル)`。
+    後者は呼び出し側が検証期間の予測に使う（`stage1_fit_full()` の役割を
+    兼ねる）。`train_ids` は呼び出し側が確定済みの学習期間レースID
+    （封印G1を除いたもの）を渡す。
     """
-    train_dated = _race_ids_by_date(conn, train_ids)
-    if train_dated.is_empty():
-        return pl.DataFrame(schema={"race_id": pl.Int64, "f102": pl.Float64})
+    empty_oof = pl.DataFrame(schema={"race_id": pl.Int64, "f102": pl.Float64})
+    full_model = LightGBMStage1Model()
+    if not train_ids:
+        return empty_oof, full_model
 
-    blocks = cross_fit_blocks(fold, n_blocks=n_blocks)
-    parts: list[pl.DataFrame] = []
-    for b_start, b_end in blocks:
-        block_ids = _ids_in_range(train_dated, b_start, b_end)
-        rest_ids = [r for r in train_dated["race_id"].to_list() if r not in set(block_ids)]
-        if not block_ids or not rest_ids:
-            continue
-        target = stage1_build_target(conn, rest_ids)
-        if target.is_empty():
-            continue
-        x = stage1_build_inputs(conn, target["race_id"].to_list(), as_of=fold.valid_start)
-        merged = x.join(target.select(["race_id", "f102_actual"]), on="race_id", how="inner")
-        model = LightGBMStage1Model()
-        model.fit(
-            merged.drop(["race_id", "f102_actual"]), merged["f102_actual"],
-            sample_weight=None, seed=fold.seed,
-        )
-        pred = predict_f102(model, conn, block_ids, as_of=fold.valid_start)
-        parts.append(pred)
-
-    if not parts:
-        return pl.DataFrame(schema={"race_id": pl.Int64, "f102": pl.Float64})
-    return pl.concat(parts)
-
-
-def stage1_fit_full(
-    conn: duckdb.DuckDBPyConnection, fold: Fold, train_race_ids: list[int],
-) -> LightGBMStage1Model:
-    """学習期間全体で学習した Stage 1 モデル（検証期間の予測用）。"""
-    target = stage1_build_target(conn, train_race_ids)
-    x = stage1_build_inputs(conn, target["race_id"].to_list(), as_of=fold.valid_start)
+    target = stage1_build_target(conn, train_ids)
+    # 予測（`predict_f102`）は laps の有無に依存しない（`D-091`）ため、
+    # 入力は target で絞る前の train_ids 全体について作る
+    x = stage1_build_inputs(conn, train_ids, as_of=fold.valid_start)
     merged = x.join(target.select(["race_id", "f102_actual"]), on="race_id", how="inner")
-    model = LightGBMStage1Model()
-    model.fit(
+    if merged.is_empty():
+        return empty_oof, full_model  # 学習可能な行が無い（未fit のモデルを返す）
+
+    full_model.fit(
         merged.drop(["race_id", "f102_actual"]), merged["f102_actual"],
         sample_weight=None, seed=fold.seed,
     )
-    return model
+
+    train_dated = _race_ids_by_date(conn, train_ids)
+    blocks = cross_fit_blocks(fold, n_blocks=n_blocks)
+    oof_parts: list[pl.DataFrame] = []
+    for b_start, b_end in blocks:
+        block_ids = set(_ids_in_range(train_dated, b_start, b_end))
+        if not block_ids:
+            continue
+        rest_merged = merged.filter(~pl.col("race_id").is_in(block_ids))
+        block_x = x.filter(pl.col("race_id").is_in(block_ids))
+        if rest_merged.is_empty() or block_x.is_empty():
+            continue
+        block_model = LightGBMStage1Model()
+        block_model.fit(
+            rest_merged.drop(["race_id", "f102_actual"]), rest_merged["f102_actual"],
+            sample_weight=None, seed=fold.seed,
+        )
+        preds = block_model.predict(block_x.drop("race_id"))
+        oof_parts.append(pl.DataFrame({
+            "race_id": block_x["race_id"].to_list(), "f102": preds.to_list(),
+        }))
+
+    if not oof_parts:
+        return empty_oof, full_model
+    return pl.concat(oof_parts), full_model
 
 
 # ---------------------------------------------------------------------------
@@ -336,8 +344,7 @@ class Stage2FoldRunner:
         valid_ids = self._race_ids(conn, fold.valid_start, fold.valid_end)
 
         # --- Stage 1（D-086） ---
-        f102_train_oof = stage1_oof_and_full(conn, fold, train_ids, n_blocks=self.n_blocks)
-        stage1_full = stage1_fit_full(conn, fold, train_ids)
+        f102_train_oof, stage1_full = stage1_fit_all(conn, fold, train_ids, n_blocks=self.n_blocks)
         f102_valid = predict_f102(stage1_full, conn, valid_ids, as_of=fold.valid_start)
         f102_all = pl.concat([
             f102_train_oof.select(["race_id", "f102"]),
@@ -397,7 +404,8 @@ class Stage2FoldRunner:
 
         # --- 校正データ作成（015 1節 / D-098）: 同じ4分割で Stage 2 自身をクロスフィット ---
         blocks = cross_fit_blocks(fold, n_blocks=self.n_blocks)
-        train_dated = _race_ids_by_date(conn, train_ids)
+        # dated（train_ids + valid_ids ぶんを既に取得済み）から絞る。再クエリしない
+        train_dated = dated.filter(pl.col("race_id").is_in(train_ids))
         oof_scores_parts: list[pl.DataFrame] = []
         for b_start, b_end in blocks:
             block_ids = set(_ids_in_range(train_dated, b_start, b_end))

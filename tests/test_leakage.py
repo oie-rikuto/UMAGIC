@@ -25,7 +25,7 @@
 
 **#8 は SQL の probe では代替できない**（モデル学習そのものを模擬する
 必要がある）ため、`umagic.stage1` を直接使う。`orchestration.py` の
-`stage1_fit_full()` が実際に行っているとおり、学習に渡す `race_ids` を
+`stage1_fit_all()` が実際に行っているとおり、学習に渡す `race_ids` を
 fold の学習期間（`train_start`〜`train_end`）に絞ることが対策であり、
 絞り忘れると「学習期間より後のレース」の情報がモデルのパラメータに
 混入する。

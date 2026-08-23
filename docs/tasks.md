@@ -337,6 +337,7 @@
       (2) `apply_g1_calibration()` が、校正前提の生スコアではなく既に softmax 済みの `y_pred` を `Calibrator.apply()` に渡しており、二重に softmax を取っていた（校正が数学的に誤った値になる）。`Stage2FoldRunner.fold_valid_scores` に生スコアを保持し直す形に修正
       (3) 「`early_stopping_rounds` を大きくすれば早期終了が起きない」という前提が誤りだった（LightGBM は最終ラウンドで無条件にロールバックする）。早期終了の仕組み自体を使わない `stage2.fit_stage2_fixed_rounds()` を新設して修正（実測: 30ラウンド要求して1〜7ラウンドしか残らない状態だった）
       あわせて重複コード（`_train_race_ids_all`/`_valid_race_ids_all` の統合、`stage2.build_category_mappings()` への `columns` 引数追加による重複実装の削除）と、`f103_z`/`f103_rank` の二重relativize（実装ミス）も修正した。テスト `tests/test_orchestration.py` を6件→8件に拡充（バグ回帰テストを追加）
+      **性能改善**: レビューで指摘された最も重い非効率（Stage 1 の入力組み立て `F-101` の相関自己結合を含む高コストなSQLを、クロスフィットの `n_blocks` ブロックごとに再実行していた）を修正。`stage1_build_target()`/`stage1_build_inputs()` は対象レース自身の過去走だけを見る行ごとに独立な計算のため、学習期間全体で1回だけ呼びブロックにはスライスして与える設計（`stage1_fit_all()`。旧 `stage1_oof_and_full()`/`stage1_fit_full()` を統合）に変更し、fold あたり `n_blocks+1` 回だったこの重いクエリを1回に削減した。あわせて `_race_ids_by_date()` の重複クエリも1箇所削減
 
 - [ ] `class_weights`/カテゴリ丸め閾値のハイパーパラメータ探索を実装する（`D-081` `D-092` `D-051` `D-059` / `D-101`）
       **ブロック中: `Q-033`**（10年分の取り込み未完了。実データでの探索が前提）
