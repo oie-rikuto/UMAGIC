@@ -2146,17 +2146,27 @@ inner 検証（`D-084` の学習期間末尾1年）を使う案は out-of-sample
 
 **1. クロスフィット用サブモデルには `D-084` のネスト検証を適用しない。**
 
-`cross_fit_blocks()` の同じ4分割を Stage 1 の out-of-fold `F-102` 作成（`D-086`）と Stage 2 自身の校正データ作成（`D-098`）の両方で使う。これらのサブモデル（fold あたり Stage 1 が `n_blocks` 回、Stage 2 の校正用が `n_blocks` 回）は、`D-084` の inner 検証（学習期間末尾1年）を個別には適用せず、**fold 全体で学習する「本番」の Stage 2 モデル1本だけが inner 検証でラウンド数（`best_iteration`）を選び、サブモデルはそのラウンド数を固定で流用する**（`early_stopping_rounds` をそのラウンド数より大きく設定し、早期終了を発火させない）。Stage 1 のサブモデル（`LightGBMStage1Model`）はそもそも `num_boost_round=50` 固定で inner 検証を持たない実装になっており、これと対称になる。
+`cross_fit_blocks()` の同じ4分割を Stage 1 の out-of-fold `F-102` 作成（`D-086`）と Stage 2 自身の校正データ作成（`D-098`）の両方で使う。これらのサブモデル（fold あたり Stage 1 が `n_blocks` 回、Stage 2 の校正用が `n_blocks` 回）は、`D-084` の inner 検証（学習期間末尾1年）を個別には適用せず、**fold 全体で学習する「本番」の Stage 2 モデル1本だけが inner 検証でラウンド数（`best_iteration`）を選び、サブモデルはそのラウンド数を固定で流用する**。Stage 1 のサブモデル（`LightGBMStage1Model`）はそもそも `num_boost_round=50` 固定で inner 検証を持たない実装になっており、これと対称になる。
+
+**ラウンド数の固定は、早期終了の仕組みを一切使わない `fit_stage2_fixed_rounds()`（`007-stage2-ranker.md` の型シグネチャに無い追加関数）で行う。** 当初は「`early_stopping_rounds` を固定したいラウンド数より大きく設定すれば早期終了は起きない」という前提で実装したが、これは誤りだった（実装後のセルフレビューで発見・修正）。LightGBM の早期終了コールバックは、猶予ラウンド数を超えたかに関わらず**最終ラウンドで無条件に発火し**、その時点で渡した検証セットにおける最良ラウンドまでモデルをロールバックする。ダミーの inner セット（本番モデルの inner 検証データを使い回す）を渡すこの用途では、そのロールバック先に意味が無く、指定したラウンド数より少ないラウンド数に痩せてしまう（実測: 30ラウンド要求して1〜7ラウンドしか残らない）。`valid_sets`/`callbacks` を渡さない `lgb.train()` 呼び出し（`fit_stage2_fixed_rounds()`）に置き換えて解決した。
 
 **2. `run_walk_forward()` に渡す `predict_fold` は校正前の生スコアを返す。校正は呼び出しの後で、G1の行にだけ別途適用する。**
 
 `predict_fold` が保持する fold ごとの `Calibrator`（`fold_calibrators`）を使い、`apply_g1_calibration()` が `run_walk_forward()` の出力のうち G1 の行だけを校正し直す。`all` 母集団の指標は `run_walk_forward()` の生出力をそのまま使う。
+
+**校正は `predict_fold` が別途保持する校正前の生スコア（`Stage2FoldRunner.fold_valid_scores`）に対して適用する。** `run_walk_forward()` の出力に載る `y_pred` はレース内 softmax 済みの `win_prob`（`T=1`）であり、これに直接 `Calibrator.apply()`（内部で `softmax(score/T)` を計算する）を適用すると二重に softmax を取ることになり、`fit_calibrator()` が前提とした生スコアとは無関係な値になる（当初の実装はこの区別をせず `y_pred` をそのまま渡しており、セルフレビューで発見・修正した）。
+
+**3. fold の日付範囲から実際の `race_id` を確定する際、封印G1（`D-017`）を明示的に除外する。**
+
+`training.make_folds()` は fold の**境界年**を封印除外後の母集団から決めるが、`Fold` オブジェクト自体は日付範囲（`train_start`〜`train_end` 等）しか持たない。`orchestration.py` がそこから実際の `race_id` 一覧を作る際に `umagic.sealed.is_sealed()` を適用しないと、`today` に近い年を含む fold では学習・検証の両方に封印G1が混入する（`today` に近いほど頻繁に起きる。当初の実装はこの適用を欠いており、セルフレビューで発見・修正した）。`Stage2FoldRunner` は `today`/`sealed_years` を `run_walk_forward()` に渡すものと同じ値で保持し、`_race_ids_in_range()` で判定する。
 
 **根拠**:
 
 1について: `cross_fit_blocks()` の境界と `fold.inner_valid_start`（学習期間末尾1年）は独立に決まる。学習期間が短い初期 fold（`min_train_years=3` のとき3年）では、4分割の1ブロックが inner 検証区間（末尾1年）の大半と重なり、「そのブロックを除いた rest」から inner 検証区間が事実上消える。サブモデルごとに独自の inner 検証区間を作る案（`rest` の中でさらに末尾を切る）は技術的には可能だが、3段ネストになり複雑さに見合わない。サブモデルは校正データ・`F-102` を作るための**診断目的の使い捨てモデル**であり、ラウンド数のわずかな最適性より、本番モデルとの整合（同じデータ規模には同じラウンド数を使う）を優先した。
 
 2について: `run_walk_forward()` の出力スキーマは `race_id, horse_id, fold_index, y_true, y_pred` の1列で固定（`014-training-pipeline.md` 6節、既存実装）であり、`D-099`（校正は `g1` 母集団にのみ適用）と両立しない。`run_walk_forward()` 自身のスキーマを母集団ごとに複数の `y_pred` を持つ形に変更する案は、`014` が既に固定した契約を壊し、`training.py` の既存テスト（`tests/test_training_walkforward.py`）が前提にしている形と食い違う。`010-backtest.md`（`P-4`、未作成）が指標計算を正式に引き取るまで、`run_p3_completion_check()`（`R-023` の A判定のみに答える最小実装）がこのつなぎを担う。
+
+3について: `race_date < target_race_date` の日付フィルタが完璧でも、封印判定（`grade='G1'` かつ直近 `sealed_years` 年以内）自体を一段どこかで適用しなければ通ってしまう。`make_folds()` の境界年決定だけでは、境界年**自体**が非封印でも、その年の日付範囲**内**の個々のG1レースが封印期間に入っているケースを防げない。`CLAUDE.md` が「原則7は日付フィルタの検査では捕まらない」と警告しているのはまさにこの種の漏れで、`tests/test_leakage.py` に将来的な欠陥注入テストを追加する余地がある。
 
 **影響**: `src/umagic/orchestration.py` の実装を規定する。`006-stage1-pace.md` / `007-stage2-ranker.md` / `014-training-pipeline.md` / `015-calibration.md` 自体の文言は変更しない（いずれも結線を外に出す設計だったため）。`010-backtest.md` を書くときは、この最小実装（校正の後掛け適用）を正式な設計として引き継ぐか見直すかを判断すること。
 

@@ -38,11 +38,17 @@ inner 検証区間が事実上消えるケースがある。Stage 1 の実装（
 `LightGBMStage1Model`）が既にラウンド数を固定（`num_boost_round=50`、
 inner 検証を使わない）としているのと対称に、Stage 2 のクロスフィット
 用サブモデルも「本番モデルの inner 検証で選んだラウンド数
-（`best_iteration`）を固定で流用し、`early_stopping_rounds` をその
-ラウンド数より大きく設定して早期終了を起こさせない」方式にする。
-`fit_stage2()` の必須引数（`inner_x` など）を満たすためにダミーの
-inner セット（本番モデルの inner 検証データを使い回す）を渡すが、
-早期終了が発火しないため学習結果に一切影響しない。
+（`best_iteration`）を固定で流用する」方式にする。
+
+**`early_stopping_rounds` を大きくして早期終了を抑止する案は機能しない
+（実装当初はこれを採用しており、後日の誤りとして訂正した）。**
+LightGBM の早期終了コールバックは、猶予ラウンド数を超えたかに関わらず
+**最終ラウンドで無条件に発火し**、その時点の検証セットで最良だった
+ラウンドまでモデルをロールバックする。ダミーの inner セットを渡す
+このユースケースでは、そのロールバック先に意味が無く、指定した
+ラウンド数より少ないラウンド数に痩せてしまう。正しくは
+`fit_stage2_fixed_rounds()`（`007-stage2-ranker.md` の型シグネチャに
+無い追加関数。早期終了の仕組みそのものを使わない）を使う。
 
 ## 確率校正の適用範囲（`D-099`）と `run_walk_forward()` の1列制約
 
@@ -69,6 +75,7 @@ import duckdb
 import polars as pl
 
 from umagic.calibration import Calibrator, fit_calibrator
+from umagic.sealed import is_sealed
 from umagic.features.build import FeatureFn, build_features
 from umagic.features.f101 import compute_f101
 from umagic.features.f103 import compute_f103
@@ -94,9 +101,16 @@ from umagic.features.relative import relativize
 from umagic.stage1 import LightGBMStage1Model, build_inputs as stage1_build_inputs
 from umagic.stage1 import build_target as stage1_build_target
 from umagic.stage1 import predict_f102
-from umagic.stage2 import apply_category_mappings, build_labels, fit_stage2, predict_win_prob, race_group
-from umagic.stage2 import CategoryMapping
-from umagic.training import Fold, cross_fit_blocks, run_walk_forward, sample_weights
+from umagic.stage2 import (
+    apply_category_mappings,
+    build_category_mappings,
+    build_labels,
+    fit_stage2,
+    fit_stage2_fixed_rounds,
+    predict_win_prob,
+    race_group,
+)
+from umagic.training import DEFAULT_SEALED_YEARS, Fold, cross_fit_blocks, run_walk_forward, sample_weights
 
 # ---------------------------------------------------------------------------
 # 003-features.md の全特徴量（F-102/F-104/F-302 は別扱い。431節の確定時刻表どおり）
@@ -136,8 +150,6 @@ DEFAULT_N_BLOCKS = 4
 DEFAULT_NUM_BOOST_ROUND = 200
 DEFAULT_EARLY_STOPPING_ROUNDS = 20
 
-_STAGE2_LGB_PARAMS: dict = {}  # lambdarank 側の追加ハイパーパラメータ（既定のまま）
-
 
 def _race_ids_by_date(conn: duckdb.DuckDBPyConnection, race_ids: list[int]) -> pl.DataFrame:
     if not race_ids:
@@ -151,22 +163,47 @@ def _ids_in_range(dated: pl.DataFrame, start: date, end: date) -> list[int]:
     return dated.filter((pl.col("date") >= start) & (pl.col("date") <= end))["race_id"].to_list()
 
 
+def _race_ids_in_range(
+    conn: duckdb.DuckDBPyConnection, start: date, end: date, *, today: date, sealed_years: int,
+) -> list[int]:
+    """指定期間のレースIDを、封印G1を除いて返す（`D-017` / `D-079`）。
+
+    `training.make_folds()` は fold の**境界年**を封印除外後の母集団から
+    決めるが、fold の日付範囲そのもの（`train_start`〜`train_end` /
+    `valid_start`〜`valid_end`）は封印を知らない。境界年が非封印でも、
+    その範囲内の個々のレースが封印期間に入っていることは普通に起きる
+    （`today` に近い年ほど）。ここで実際の `race_id` を確定する際に
+    `is_sealed()` を適用しないと、学習にも検証にも封印G1が混入する。
+    """
+    rows = conn.execute(
+        "SELECT race_id, date, grade FROM races WHERE date >= ? AND date <= ? ORDER BY race_id",
+        [start, end],
+    ).pl()
+    if rows.is_empty():
+        return []
+    mask = [
+        not is_sealed(d, g, today=today, n_years=sealed_years)
+        for d, g in zip(rows["date"].to_list(), rows["grade"].to_list())
+    ]
+    return rows.filter(pl.Series(mask, dtype=pl.Boolean))["race_id"].to_list()
+
+
 # ---------------------------------------------------------------------------
 # Stage 1: クロスフィッティング（D-086）
 # ---------------------------------------------------------------------------
 
 def stage1_oof_and_full(
-    conn: duckdb.DuckDBPyConnection, fold: Fold, *, n_blocks: int = DEFAULT_N_BLOCKS,
+    conn: duckdb.DuckDBPyConnection, fold: Fold, train_ids: list[int], *,
+    n_blocks: int = DEFAULT_N_BLOCKS,
 ) -> pl.DataFrame:
     """学習期間の全レースについて `F-102` を返す（`race_id, f102`）。
 
     学習期間の行は out-of-fold（クロスフィット、`D-086`）。この戻り値には
     検証期間の `f102` を含まない（呼び出し側が学習期間全体で学習した
-    モデルを別途 `predict_f102()` する）。
+    モデルを別途 `predict_f102()` する）。`train_ids` は呼び出し側が
+    確定済みの学習期間レースID（封印G1を除いたもの）を渡す。
     """
-    train_dated = _race_ids_by_date(
-        conn, _train_race_ids_all(conn, fold),
-    )
+    train_dated = _race_ids_by_date(conn, train_ids)
     if train_dated.is_empty():
         return pl.DataFrame(schema={"race_id": pl.Int64, "f102": pl.Float64})
 
@@ -210,20 +247,6 @@ def stage1_fit_full(
     return model
 
 
-def _train_race_ids_all(conn: duckdb.DuckDBPyConnection, fold: Fold) -> list[int]:
-    return conn.execute(
-        "SELECT race_id FROM races WHERE date >= ? AND date <= ? ORDER BY race_id",
-        [fold.train_start, fold.train_end],
-    ).pl()["race_id"].to_list()
-
-
-def _valid_race_ids_all(conn: duckdb.DuckDBPyConnection, fold: Fold) -> list[int]:
-    return conn.execute(
-        "SELECT race_id FROM races WHERE date >= ? AND date <= ? ORDER BY race_id",
-        [fold.valid_start, fold.valid_end],
-    ).pl()["race_id"].to_list()
-
-
 # ---------------------------------------------------------------------------
 # Stage 2: 特徴量行列の組み立て（003 全特徴量 + F-102/F-104/F-302 の接続）
 # ---------------------------------------------------------------------------
@@ -255,8 +278,12 @@ def assemble_stage2_matrix(
     base = attach_f302(base, empty_horse_effects)  # 013 未実装。D-060 により全行 NaN
 
     # F-901（レース内相対化）: race_level でも category でも unavailable 指示子でもない列
-    # 「f103」は compute_f104 が内部で既に relativize 済み（f103_z / f103_rank が存在する）
-    skip = RACE_LEVEL_COLUMNS | CATEGORY_COLUMNS | {"race_id", "horse_id", "n_starters", "f103"}
+    # 「f103」は compute_f104 が内部で既に relativize 済み（f103_z / f103_rank が
+    # 存在する）。その2列も除かないと z-score の z-score のような無意味な列が
+    # 二重に作られる（実装ミスで一度混入させ、テストで発見・修正した）
+    skip = RACE_LEVEL_COLUMNS | CATEGORY_COLUMNS | {
+        "race_id", "horse_id", "n_starters", "f103", "f103_z", "f103_rank",
+    }
     value_cols = [
         c for c in base.columns
         if c not in skip and not c.endswith("_unavailable")
@@ -271,26 +298,6 @@ def _feature_columns(df: pl.DataFrame) -> list[str]:
     return [c for c in df.columns if c not in ("race_id", "horse_id", "label", "sample_weight", "date")]
 
 
-def _build_category_mappings(
-    train: pl.DataFrame, *, columns: frozenset[str], min_count: int,
-) -> dict[str, CategoryMapping]:
-    """`stage2.build_category_mappings()` と同じロジックを、拡張した列集合に適用する。
-
-    `stage2._CATEGORY_COLS`（既定4列）はそのまま利用可能だが、
-    orchestration 層が組み立てた行列には `D-092` 相当の丸めが必要な
-    文字列列がそれ以外にも存在する（`CATEGORY_COLUMNS`）ため、
-    列集合を明示的に受け取れる形にする。
-    """
-    mappings: dict[str, CategoryMapping] = {}
-    for col in columns:
-        if col not in train.columns:
-            continue
-        counts = train.filter(pl.col(col).is_not_null()).group_by(col).len()
-        keep = sorted(counts.filter(pl.col("len") >= min_count)[col].to_list())
-        mappings[col] = CategoryMapping(column=col, keep=frozenset(keep), other_code=len(keep))
-    return mappings
-
-
 # ---------------------------------------------------------------------------
 # fold ごとの実行本体
 # ---------------------------------------------------------------------------
@@ -299,11 +306,19 @@ def _build_category_mappings(
 class Stage2FoldRunner:
     """`run_walk_forward()` に渡す `predict_fold` callback を提供する。
 
-    fold ごとに校正器（`Calibrator`）を `fold_calibrators` に保持する
-    （校正の適用は `run_walk_forward()` の外、`D-099` の理由はモジュール
+    fold ごとに校正器（`Calibrator`）を `fold_calibrators` に、検証期間の
+    生スコア（校正前）を `fold_valid_scores` に保持する（校正の適用は
+    `run_walk_forward()` の外、`D-099` の理由はモジュール docstring を
+    参照。`fold_valid_scores` が要る理由は `apply_g1_calibration()` の
     docstring を参照）。
+
+    `today`/`sealed_years` は `run_walk_forward()` に渡すものと**同じ値を
+    渡すこと**。fold の日付範囲から実際の `race_id` を確定する際に、
+    封印G1（`D-017`）を除外するために使う。
     """
 
+    today: date
+    sealed_years: int = DEFAULT_SEALED_YEARS
     n_blocks: int = DEFAULT_N_BLOCKS
     class_weights: dict[str | None, float] = field(default_factory=lambda: dict(DEFAULT_CLASS_WEIGHTS))
     min_category_count: int = DEFAULT_MIN_CATEGORY_COUNT
@@ -311,13 +326,17 @@ class Stage2FoldRunner:
     early_stopping_rounds: int = DEFAULT_EARLY_STOPPING_ROUNDS
     fold_calibrators: dict[int, Calibrator] = field(default_factory=dict)
     fold_inner_metrics: dict[int, dict] = field(default_factory=dict)
+    fold_valid_scores: dict[int, pl.DataFrame] = field(default_factory=dict)
+
+    def _race_ids(self, conn: duckdb.DuckDBPyConnection, start: date, end: date) -> list[int]:
+        return _race_ids_in_range(conn, start, end, today=self.today, sealed_years=self.sealed_years)
 
     def predict_fold(self, conn: duckdb.DuckDBPyConnection, fold: Fold) -> pl.DataFrame:
-        train_ids = _train_race_ids_all(conn, fold)
-        valid_ids = _valid_race_ids_all(conn, fold)
+        train_ids = self._race_ids(conn, fold.train_start, fold.train_end)
+        valid_ids = self._race_ids(conn, fold.valid_start, fold.valid_end)
 
         # --- Stage 1（D-086） ---
-        f102_train_oof = stage1_oof_and_full(conn, fold, n_blocks=self.n_blocks)
+        f102_train_oof = stage1_oof_and_full(conn, fold, train_ids, n_blocks=self.n_blocks)
         stage1_full = stage1_fit_full(conn, fold, train_ids)
         f102_valid = predict_f102(stage1_full, conn, valid_ids, as_of=fold.valid_start)
         f102_all = pl.concat([
@@ -337,23 +356,23 @@ class Stage2FoldRunner:
             .sort(["race_id", "horse_id"])
         )
 
-        train_set = set(train_ids)
-        valid_set = set(valid_ids)
-        train_data = data.filter(pl.col("race_id").is_in(train_set)).sort(["race_id", "horse_id"])
-        valid_data = data.filter(pl.col("race_id").is_in(valid_set)).sort(["race_id", "horse_id"])
+        train_data = data.filter(pl.col("race_id").is_in(train_ids)).sort(["race_id", "horse_id"])
+        valid_data = data.filter(pl.col("race_id").is_in(valid_ids)).sort(["race_id", "horse_id"])
 
-        mappings = _build_category_mappings(
-            train_data, columns=CATEGORY_COLUMNS, min_count=self.min_category_count,
+        mappings = build_category_mappings(
+            train_data, min_count=self.min_category_count, columns=CATEGORY_COLUMNS,
         )
         train_data = apply_category_mappings(train_data, mappings)
         valid_data = apply_category_mappings(valid_data, mappings)
 
         sw = sample_weights(conn, train_ids, class_weights=self.class_weights)
-        train_data = train_data.join(sw, on="race_id", how="left")
+        # D-055: 結合後の行順を明示的に保証する（race_group() が (race_id, horse_id)
+        # 連続を前提とするため、join の出力順に暗黙に依存しない）
+        train_data = train_data.join(sw, on="race_id", how="left").sort(["race_id", "horse_id"])
 
         feature_cols = _feature_columns(train_data)
         cat_idx = [feature_cols.index(c) for c in CATEGORY_COLUMNS if c in feature_cols]
-        params = {**_STAGE2_LGB_PARAMS, "categorical_feature": cat_idx}
+        params = {"categorical_feature": cat_idx}
 
         inner_train = train_data.filter(pl.col("date") < fold.inner_valid_start).sort(["race_id", "horse_id"])
         inner_valid = train_data.filter(pl.col("date") >= fold.inner_valid_start).sort(["race_id", "horse_id"])
@@ -368,16 +387,12 @@ class Stage2FoldRunner:
         )
         self.fold_inner_metrics[fold.index] = inner_metrics
         n_rounds = max(1, selection_booster.best_iteration)
-        fixed_rounds_kwargs = dict(
-            num_boost_round=n_rounds, early_stopping_rounds=n_rounds + 1,
-            inner_x=inner_valid.select(feature_cols), inner_label=inner_valid["label"],
-            inner_group=race_group(inner_valid),
-        )
 
-        # --- 本番モデル: 学習期間全体で学習、選ばれたラウンド数を固定 ---
-        final_booster, _ = fit_stage2(
+        # --- 本番モデル: 学習期間全体で学習、選ばれたラウンド数を固定
+        #     （早期終了そのものを使わない。理由は fit_stage2_fixed_rounds() の docstring） ---
+        final_booster = fit_stage2_fixed_rounds(
             x=train_data.select(feature_cols), label=train_data["label"], group=race_group(train_data),
-            sample_weight=train_data["sample_weight"], seed=fold.seed, params=params, **fixed_rounds_kwargs,
+            sample_weight=train_data["sample_weight"], seed=fold.seed, params=params, num_boost_round=n_rounds,
         )
 
         # --- 校正データ作成（015 1節 / D-098）: 同じ4分割で Stage 2 自身をクロスフィット ---
@@ -392,9 +407,9 @@ class Stage2FoldRunner:
             rest_data = train_data.filter(~pl.col("race_id").is_in(block_ids)).sort(["race_id", "horse_id"])
             if block_data.is_empty() or rest_data.is_empty():
                 continue
-            block_model, _ = fit_stage2(
+            block_model = fit_stage2_fixed_rounds(
                 x=rest_data.select(feature_cols), label=rest_data["label"], group=race_group(rest_data),
-                sample_weight=rest_data["sample_weight"], seed=fold.seed, params=params, **fixed_rounds_kwargs,
+                sample_weight=rest_data["sample_weight"], seed=fold.seed, params=params, num_boost_round=n_rounds,
             )
             pred = predict_win_prob(
                 block_model, block_data.select(feature_cols), block_data["race_id"], block_data["horse_id"],
@@ -420,6 +435,11 @@ class Stage2FoldRunner:
         valid_pred = predict_win_prob(
             final_booster, valid_data.select(feature_cols), valid_data["race_id"], valid_data["horse_id"],
         )
+        # apply_g1_calibration() が校正前の生スコアを引き直せるように保持する
+        # （win_prob から score を逆算することはできない。同モジュールの
+        # apply_g1_calibration() docstring を参照）
+        self.fold_valid_scores[fold.index] = valid_pred.select(["race_id", "horse_id", "score"])
+
         out = valid_pred.select(["race_id", "horse_id", "win_prob"]).join(
             valid_data.select(["race_id", "horse_id", "label"]), on=["race_id", "horse_id"],
         )
@@ -442,6 +462,22 @@ def apply_g1_calibration(
     fold ごとの `Calibrator` で校正し直す（`D-099`）。
 
     `all` 母集団の指標は `walk_forward_out` をそのまま使う（校正しない）。
+
+    **`y_pred` に `Calibrator.apply()` を直接使わない。** `y_pred` は
+    `predict_fold()` が返す時点で既にレース内 softmax 済みの `win_prob`
+    （`T=1`）であり、`Calibrator.apply()`（内部で `softmax(score/T)` を
+    計算する）にそのまま渡すと **二重に softmax を取ってしまい**、
+    `fit_calibrator()` が校正前提としていた生スコアとは無関係な値になる
+    （softmax は加法シフトに対して不変だが `T≠1` の除算と組み合わさると
+    保存されない）。そのため `runner.fold_valid_scores`（`predict_fold()`
+    が保持する校正前の生スコア）を `(race_id, horse_id)` で結合し直し、
+    その生スコアに対して校正を適用する。
+
+    `runner.fold_calibrators` に無い `fold_index` の行（`walk_forward_out`
+    にだけ存在する場合）は校正できないため**その fold の行を返さない**
+    （黙って未校正のまま混ぜない）。`run_p3_completion_check()` のように
+    同じ `runner` を `run_walk_forward()` に渡した直後に呼ぶ使い方では
+    起こらない。
     """
     if walk_forward_out.is_empty():
         return walk_forward_out
@@ -457,9 +493,15 @@ def apply_g1_calibration(
         sub = walk_forward_out.filter(
             (pl.col("fold_index") == fold_index) & pl.col("race_id").is_in(g1_ids)
         )
-        if sub.is_empty():
+        raw_scores = runner.fold_valid_scores.get(fold_index)
+        if sub.is_empty() or raw_scores is None:
             continue
-        scored = cal.apply(sub.select("race_id", "horse_id", pl.col("y_pred").alias("score")))
+        to_calibrate = sub.select(["race_id", "horse_id"]).join(
+            raw_scores, on=["race_id", "horse_id"], how="inner"
+        )
+        if to_calibrate.is_empty():
+            continue
+        scored = cal.apply(to_calibrate)
         parts.append(
             scored.select("race_id", "horse_id", pl.col("win_prob").alias("y_pred"))
             .join(sub.select(["race_id", "horse_id", "fold_index", "y_true"]), on=["race_id", "horse_id"])
@@ -497,7 +539,13 @@ def _race_logloss_from_walk_forward(df: pl.DataFrame) -> float:
 
 @dataclass(frozen=True)
 class P3CompletionResult:
-    """`R-023`（A判定）の判定結果。"""
+    """`R-023`（A判定）の判定結果。
+
+    **`g1_n_races == 0` のとき `passes_r023` は `False` になるが、
+    「不合格」ではなく「判定不能」を意味する**（`g1_model_logloss` /
+    `g1_market_logloss` は `NaN` で `NaN < x` は常に `False` になるため）。
+    `passes_r023` を読む前に必ず `g1_n_races > 0` を確認すること。
+    """
 
     g1_model_logloss: float
     g1_market_logloss: float
@@ -505,24 +553,34 @@ class P3CompletionResult:
     all_model_logloss: float
     all_market_logloss: float
     all_n_races: int
-    passes_r023: bool  # g1_model_logloss < g1_market_logloss
+    passes_r023: bool  # g1_model_logloss < g1_market_logloss（g1_n_races==0 なら判定不能）
 
 
 def run_p3_completion_check(
-    conn: duckdb.DuckDBPyConnection, *, today: date, runner: Stage2FoldRunner | None = None,
+    conn: duckdb.DuckDBPyConnection, *, today: date, sealed_years: int = DEFAULT_SEALED_YEARS,
+    runner: Stage2FoldRunner | None = None,
 ) -> P3CompletionResult:
     """`R-023`（A判定）を判定する。
 
     `g1` 母集団は校正後（`D-099`）、`all` 母集団は校正前（生スコア）の
     `y_pred` を使う。市場確率は `baseline.probability_metrics()` を
-    **同じレース集合に対して計算し直す**（`D-075`）。封印セット・
-    学習未使用データの除外は `run_walk_forward()`（`D-079` / `D-017`）が
-    既に行っている。
+    **同じレース集合に対して計算し直す**（`D-075`）。
+
+    封印セット（`D-017`）は2箇所で効く: `run_walk_forward()`
+    （`make_folds()` 経由）が fold の**境界年**を封印除外後の母集団から
+    決め、`Stage2FoldRunner`（`_race_ids_in_range()`）が fold の日付範囲
+    から実際の `race_id` を確定する際に封印G1を除外する。**両者の
+    `sealed_years` は必ず一致させること**（本関数は `runner` を渡さない
+    限り自動で揃える）。`runner` を明示的に渡す場合は、その
+    `runner.sealed_years` が本関数の `sealed_years` と一致しているか
+    呼び出し側の責任で確認すること。
     """
     from umagic.baseline import probability_metrics
 
-    runner = runner or Stage2FoldRunner()
-    raw = run_walk_forward(conn, predict_fold=runner.predict_fold, today=today)
+    runner = runner or Stage2FoldRunner(today=today, sealed_years=sealed_years)
+    raw = run_walk_forward(
+        conn, predict_fold=runner.predict_fold, today=today, sealed_years=sealed_years,
+    )
 
     g1_calibrated = apply_g1_calibration(conn, raw, runner)
     all_model_logloss = _race_logloss_from_walk_forward(raw)

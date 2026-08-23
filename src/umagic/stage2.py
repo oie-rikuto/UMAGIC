@@ -41,11 +41,17 @@ class CategoryMapping:
 
 
 def build_category_mappings(
-    train: pl.DataFrame, *, min_count: int,
+    train: pl.DataFrame, *, min_count: int, columns: Iterable[str] | None = None,
 ) -> dict[str, CategoryMapping]:
-    """fold の学習期間だけで出現回数を数える（`R-019` / 原則7）。"""
+    """fold の学習期間だけで出現回数を数える（`R-019` / 原則7）。
+
+    `columns` 省略時は既定の `_CATEGORY_COLS`（血統ID + `003-features.md`
+    由来の文字列列）を使う。呼び出し側（orchestration層）が独自の列集合を
+    持つ場合はここに明示的に渡す（`orchestration.CATEGORY_COLUMNS` と
+    二重実装しないため。両者は同じ集合であることをテストで固定する）。
+    """
     mappings: dict[str, CategoryMapping] = {}
-    for col in _CATEGORY_COLS:
+    for col in (columns if columns is not None else _CATEGORY_COLS):
         if col not in train.columns:
             continue
         counts = (
@@ -253,6 +259,44 @@ def fit_stage2(
     )
     metrics = {"inner_logloss": inner_logloss, "inner_ndcg3": inner_ndcg3}
     return booster, metrics
+
+
+def fit_stage2_fixed_rounds(
+    x: pl.DataFrame, label: pl.Series, group: pl.Series, *,
+    sample_weight: pl.Series | None, seed: int, params: dict, num_boost_round: int,
+) -> object:
+    """`lambdarank` を、早期終了を使わず指定ラウンド数だけ学習する。
+
+    `orchestration.py` のクロスフィット用サブモデル（`D-100`）向け。
+    「`early_stopping_rounds` を `num_boost_round` より大きくすれば早期
+    終了は起きない」という前提は誤りだった: LightGBM の早期終了
+    コールバックは、猶予ラウンド数を超えたかに関わらず**最終ラウンドで
+    無条件に発火し**、その時点の検証セットで最良だったラウンドまで
+    モデルをロールバックする（`_final_iteration_check`）。ダミーの
+    inner セットを渡すこの用途では、そのロールバック先が意味を持たず
+    `num_boost_round` 未満のラウンド数に痩せる。**早期終了の仕組みを
+    まったく使わない**（`valid_sets`/`callbacks` を渡さない）ことでのみ
+    正しく回避できる。
+    """
+    import lightgbm as lgb
+
+    cat_cols = params.get("categorical_feature")
+    extra_params = {k: v for k, v in params.items() if k != "categorical_feature"}
+
+    train_ds = lgb.Dataset(
+        x.to_numpy(), label=label.to_numpy(), group=list(group),
+        weight=sample_weight.to_numpy() if sample_weight is not None else None,
+        categorical_feature=cat_cols if cat_cols is not None else "auto",
+        free_raw_data=False,
+    )
+    full_params = {
+        "objective": "lambdarank", "metric": "None", "verbose": -1,
+        "seed": seed, "bagging_seed": seed, "feature_fraction_seed": seed,
+        "deterministic": True, "force_row_wise": True, "num_threads": 1,
+        "min_data_in_leaf": 1,
+        **extra_params,
+    }
+    return lgb.train(full_params, train_ds, num_boost_round=num_boost_round)
 
 
 def predict_win_prob(

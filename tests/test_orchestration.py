@@ -63,6 +63,12 @@ def test_assemble_stage2_matrix_relativizes_non_race_level_columns(orch_conn):
     assert "f104_z" not in out.columns
     # カテゴリ列（sire_id 等）にも付かない
     assert "sire_id_z" not in out.columns
+    # バグ回帰: f103_z/f103_rank（compute_f104 が内部で作る）が二重に
+    # relativize されない（z-score の z-score のような無意味な列を作らない）
+    assert "f103_z_z" not in out.columns
+    assert "f103_z_rank" not in out.columns
+    assert "f103_rank_z" not in out.columns
+    assert "f103_rank_rank" not in out.columns
 
 
 def test_assemble_stage2_matrix_f104_uses_joined_f102(orch_conn):
@@ -80,20 +86,7 @@ def test_assemble_stage2_matrix_f104_uses_joined_f102(orch_conn):
         assert row["f104"] == pytest.approx(row["f103_z"])
 
 
-def test_apply_g1_calibration_leaves_non_g1_untouched():
-    """観点4: `apply_g1_calibration` は G1以外の行を返さない（呼び出し側が
-    `all` 母集団には元の`walk_forward_out`をそのまま使う設計を裏付ける）。
-    """
-    from umagic.calibration import Calibrator
-
-    class _FakeRunner:
-        fold_calibrators = {
-            0: Calibrator(
-                temperature=2.0, n_races_fit=10, n_runners_fit=80,
-                logloss_before=1.0, logloss_after=0.9, at_bound=False,
-            )
-        }
-
+def _make_calibration_fixture_conn():
     import duckdb
 
     from umagic.ops_schema import create_ops_schema
@@ -108,6 +101,27 @@ def test_apply_g1_calibration_leaves_non_g1_untouched():
         "(1, '2020-01-01', '東京', 1, 2000, '芝', 'G1', 2, 2, 'netkeiba_jra', now()), "
         "(2, '2020-01-01', '中山', 1, 2000, '芝', NULL, 2, 2, 'netkeiba_jra', now())"
     )
+    return conn
+
+
+def test_apply_g1_calibration_leaves_non_g1_untouched():
+    """観点4: `apply_g1_calibration` は G1以外の行を返さない（呼び出し側が
+    `all` 母集団には元の`walk_forward_out`をそのまま使う設計を裏付ける）。
+    """
+    from umagic.calibration import Calibrator
+
+    class _FakeRunner:
+        fold_calibrators = {
+            0: Calibrator(
+                temperature=2.0, n_races_fit=10, n_runners_fit=80,
+                logloss_before=1.0, logloss_after=0.9, at_bound=False,
+            )
+        }
+        fold_valid_scores = {
+            0: pl.DataFrame({"race_id": [1, 1], "horse_id": [10, 11], "score": [2.0, 0.0]}),
+        }
+
+    conn = _make_calibration_fixture_conn()
     walk_forward_out = pl.DataFrame({
         "race_id": [1, 1, 2, 2], "horse_id": [10, 11, 20, 21], "fold_index": [0, 0, 0, 0],
         "y_true": [1.0, 0.0, 1.0, 0.0], "y_pred": [0.6, 0.4, 0.6, 0.4],
@@ -119,13 +133,73 @@ def test_apply_g1_calibration_leaves_non_g1_untouched():
     assert set(out.columns) == set(walk_forward_out.columns)
 
 
+def test_apply_g1_calibration_uses_raw_score_not_y_pred():
+    """観点4b（バグ回帰）: `apply_g1_calibration` は `predict_fold` が保持した
+    校正前の生スコア（`fold_valid_scores`）に温度を適用する。`y_pred`
+    （レース内 softmax 済みの `win_prob`）をそのまま `Calibrator.apply()`
+    に渡すと二重に softmax を取ってしまい、下のアサーションで検証する
+    正しい値（`softmax(score/T)`）と一致しなくなる。
+    """
+    import math
+
+    from umagic.calibration import Calibrator
+
+    T = 2.0
+    raw_scores = {10: 2.0, 11: 0.0}
+    # y_pred（win_prob）は T=1 の softmax なので raw_scores とは異なる値にしておく
+    y_pred = {10: 0.7, 11: 0.3}
+
+    class _FakeRunner:
+        fold_calibrators = {
+            0: Calibrator(
+                temperature=T, n_races_fit=10, n_runners_fit=80,
+                logloss_before=1.0, logloss_after=0.9, at_bound=False,
+            )
+        }
+        fold_valid_scores = {
+            0: pl.DataFrame({
+                "race_id": [1, 1], "horse_id": [10, 11],
+                "score": [raw_scores[10], raw_scores[11]],
+            }),
+        }
+
+    conn = _make_calibration_fixture_conn()
+    walk_forward_out = pl.DataFrame({
+        "race_id": [1, 1], "horse_id": [10, 11], "fold_index": [0, 0],
+        "y_true": [1.0, 0.0], "y_pred": [y_pred[10], y_pred[11]],
+    })
+    out = apply_g1_calibration(conn, walk_forward_out, _FakeRunner())
+    conn.close()
+
+    expected_10 = math.exp(raw_scores[10] / T) / (math.exp(raw_scores[10] / T) + math.exp(raw_scores[11] / T))
+    got_10 = out.filter(pl.col("horse_id") == 10)["y_pred"].item()
+    assert got_10 == pytest.approx(expected_10, abs=1e-9)
+
+
+def test_race_ids_in_range_excludes_sealed_g1():
+    """観点7（バグ回帰）: 封印期間内のG1レースは、fold の学習・検証どちらの
+    `race_id` 一覧にも含まれない（`D-017`/`D-079`）。非G1は同じ期間内でも
+    封印されない（`D-003`: 学習データ全体は封印対象ではない）。
+    """
+    from umagic.orchestration import _race_ids_in_range
+
+    conn = _make_calibration_fixture_conn()  # race_id=1: G1・2020-01-01, race_id=2: 非G1・同日
+    today = date(2022, 6, 1)  # sealed_years=3 → 封印窓 [2019-06-01, 2022-06-01]（2020-01-01を含む）
+    ids = _race_ids_in_range(conn, date(2019, 1, 1), date(2021, 1, 1), today=today, sealed_years=3)
+    conn.close()
+
+    assert 1 not in ids  # G1・封印期間内 → 除外
+    assert 2 in ids  # 非G1 → 封印されない
+
+
 def test_walk_forward_end_to_end_smoke(orch_conn):
     """観点5（スモークテスト）: Stage 1 → Stage 2 → 校正 の結線が最後まで
     例外なく走り、`run_walk_forward()` の契約どおりの出力になる。
     実データでの精度は検証しない（`006`/`007`/`015` 個別のテストの役割）。
     """
     runner = Stage2FoldRunner(
-        n_blocks=2, min_category_count=2, num_boost_round=10, early_stopping_rounds=3,
+        today=date(2026, 1, 1), n_blocks=2, min_category_count=2,
+        num_boost_round=10, early_stopping_rounds=3,
     )
     out = run_walk_forward(orch_conn, predict_fold=runner.predict_fold, today=date(2026, 1, 1))
 
@@ -160,7 +234,8 @@ def test_run_p3_completion_check_smoke(orch_conn):
     from umagic.orchestration import P3CompletionResult, run_p3_completion_check
 
     runner = Stage2FoldRunner(
-        n_blocks=2, min_category_count=2, num_boost_round=10, early_stopping_rounds=3,
+        today=date(2026, 1, 1), n_blocks=2, min_category_count=2,
+        num_boost_round=10, early_stopping_rounds=3,
     )
     result = run_p3_completion_check(orch_conn, today=date(2026, 1, 1), runner=runner)
 
