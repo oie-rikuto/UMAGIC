@@ -142,9 +142,11 @@ CATEGORY_COLUMNS = frozenset({
     "f804_weather", "f804_weather_forecast",
 })
 
-# D-081 / D-092: 既定値は本決定で固定しない、とされている値の暫定placeholder。
-# P-3のハイパーパラメータ探索（未着手）で正式に決めるまでの仮値。
-DEFAULT_CLASS_WEIGHTS: dict[str | None, float] = {"G1": 5.0, "G2": 3.0, "G3": 2.0, "L": 1.5}
+# D-081 / D-092: 2026-08-24、実データ（fold 0・fold 6、inner検証）での
+# ハイパーパラメータ探索により選定（D-101 追記）。12候補中、この組み合わせが
+# 平均inner LogLossで最良（2.2301）。ただし全候補の差はごくわずか（0.34%）で、
+# `F-902` の k・`F-101` 等の窓 N は未探索（D-101 追記の限界を参照）
+DEFAULT_CLASS_WEIGHTS: dict[str | None, float] = {"G1": 10.0, "G2": 4.0, "G3": 2.0, "L": 1.5}
 DEFAULT_MIN_CATEGORY_COUNT = 20
 DEFAULT_N_BLOCKS = 4
 DEFAULT_NUM_BOOST_ROUND = 200
