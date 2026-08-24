@@ -9,6 +9,7 @@ import polars as pl
 from umagic.features.f103 import (
     DEFAULT_K,
     FALLBACK_MU_GLOBAL,
+    MIN_VAR_X,
     _mu_global_daily,
     _mu_global_for_dates,
     _ols_slope,
@@ -51,6 +52,18 @@ def test_ols_slope_needs_two_points():
 
 def test_ols_slope_zero_variance_is_none():
     assert _ols_slope([0.5, 0.5, 0.5], [1.0, 2.0, 3.0]) is None
+
+
+def test_ols_slope_near_zero_variance_is_none():
+    """観点（`D-102`）: 分散が `MIN_VAR_X` 未満なら非ゼロでも `None`。
+
+    `beta = cov_xy / var_x` は `var_x` が極小だと悪条件になり、`p_i` に
+    乗る浮動小数点誤差（DuckDB の並列集計に由来。`~1e-14` 程度）が
+    `beta` に大きく増幅される（`Q-038` で発見した `R-021` 違反の原因）。
+    """
+    tiny = MIN_VAR_X / 100  # MIN_VAR_X 未満になるよう、3点にごく小さいばらつきを与える
+    xs = [0.5, 0.5 + tiny**0.5, 0.5 - tiny**0.5]
+    assert _ols_slope(xs, [1.0, 2.0, 3.0]) is None
 
 
 def test_ols_slope_known_value():

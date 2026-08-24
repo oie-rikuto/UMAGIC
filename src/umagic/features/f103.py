@@ -77,15 +77,29 @@ def _pace_pairs(conn: duckdb.DuckDBPyConnection, base: pl.DataFrame) -> pl.DataF
         conn.unregister("base")
 
 
+MIN_VAR_X = 1e-6  # D-102: この値未満の分散では beta を計算しない（数値不安定性のガード）
+
+
 def _ols_slope(xs: list[float], ys: list[float]) -> float | None:
-    """`ys ~ xs` の単回帰の傾き。標本数2未満、または `xs` の分散が0なら `None`。"""
+    """`ys ~ xs` の単回帰の傾き。標本数2未満、または `xs` の分散が `MIN_VAR_X`
+    未満なら `None`（`D-102`）。
+
+    `beta = cov_xy / var_x` は `var_x` で割るため、分散がゼロに近いほど
+    誤差が増幅される（悪条件の回帰）。`p_i` は DuckDB の並列集計
+    （`AVG()`）を経由しており、実行のたびに最終桁レベルの浮動小数点誤差
+    （`~1e-14` 程度、通常は無害）が乗る。`var_x` が極小だとこの誤差が
+    `beta` に大きく増幅され、`beta` は全馬共通の `mu_global`（累積平均）
+    に混ざるため、少数の不安定な `beta` の誤差が多数の行の `f103` に
+    伝播する（`R-021` 違反の実例、`Q-038` で発見）。**`var_x == 0` だけ
+    弾ぐ既存のガードでは、ゼロに近いが非ゼロの分散を防げなかった。**
+    """
     n = len(xs)
     if n < 2:
         return None
     mean_x = sum(xs) / n
     mean_y = sum(ys) / n
     var_x = sum((x - mean_x) ** 2 for x in xs)
-    if var_x == 0:
+    if var_x < MIN_VAR_X:
         return None
     cov_xy = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
     return cov_xy / var_x
