@@ -142,11 +142,15 @@ CATEGORY_COLUMNS = frozenset({
     "f804_weather", "f804_weather_forecast",
 })
 
-# D-081 / D-092: 2026-08-24、実データ（fold 0・fold 6、inner検証）での
-# ハイパーパラメータ探索により選定（D-101 追記）。12候補中、この組み合わせが
-# 平均inner LogLossで最良（2.2301）。ただし全候補の差はごくわずか（0.34%）で、
-# `F-902` の k・`F-101` 等の窓 N は未探索（D-101 追記の限界を参照）
-DEFAULT_CLASS_WEIGHTS: dict[str | None, float] = {"G1": 10.0, "G2": 4.0, "G3": 2.0, "L": 1.5}
+# D-081 / D-092: 2026-08-24、実データでのハイパーパラメータ探索により選定
+# （D-101 追記）。**探索は学習期間末尾1年の全レース（G1に限らない）の
+# inner LogLossで比較しており、その指標では「G1重み強め」が最良だった
+# （2.2301）。しかし実際に7fold walk-forwardを回してG1のLogLossを直接
+# 比較したところ、「G1重み強め」はG1で明確に悪化した（2.2985→2.4030）。
+# 探索指標とR-023の目的指標（G1 LogLoss）が乖離していたため、G1実測が
+# 良かったこちらの値（探索前の暫定値と同じ）に戻す。** `min_category_count`
+# は探索・G1実測のどちらでも問題は見られず、そのまま採用する
+DEFAULT_CLASS_WEIGHTS: dict[str | None, float] = {"G1": 5.0, "G2": 3.0, "G3": 2.0, "L": 1.5}
 DEFAULT_MIN_CATEGORY_COUNT = 20
 DEFAULT_N_BLOCKS = 4
 DEFAULT_NUM_BOOST_ROUND = 200
@@ -337,6 +341,11 @@ class Stage2FoldRunner:
     fold_calibrators: dict[int, Calibrator] = field(default_factory=dict)
     fold_inner_metrics: dict[int, dict] = field(default_factory=dict)
     fold_valid_scores: dict[int, pl.DataFrame] = field(default_factory=dict)
+    # 校正データ作成に使った G1 の out-of-fold スコア（`race_id, horse_id,
+    # score, is_winner, n_starters`）。fold ごとの `Calibrator` は既に
+    # `fold_calibrators` にあるが、`Q-037`（頭数帯ごとの T の妥当性確認）
+    # には元データが要るため、診断用に別途保持する
+    fold_oof_g1: dict[int, pl.DataFrame] = field(default_factory=dict)
 
     def _race_ids(self, conn: duckdb.DuckDBPyConnection, start: date, end: date) -> list[int]:
         return _race_ids_in_range(conn, start, end, today=self.today, sealed_years=self.sealed_years)
@@ -440,6 +449,12 @@ class Stage2FoldRunner:
             .join(is_winner, on=["race_id", "horse_id"], how="inner")
         )
         self.fold_calibrators[fold.index] = fit_calibrator(oof_g1)
+        if not oof_g1.is_empty():
+            n_starters_g1 = conn.execute(
+                "SELECT race_id, n_starters FROM races WHERE race_id = ANY(?)",
+                [oof_g1["race_id"].unique().to_list()],
+            ).pl()
+            self.fold_oof_g1[fold.index] = oof_g1.join(n_starters_g1, on="race_id", how="left")
 
         # --- 検証期間の予測（校正前。y_pred は生スコアの softmax） ---
         valid_pred = predict_win_prob(

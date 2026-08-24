@@ -220,6 +220,12 @@ def test_walk_forward_end_to_end_smoke(orch_conn):
     calibrated = apply_g1_calibration(orch_conn, out, runner)
     assert set(calibrated.columns) == set(out.columns)
 
+    # Q-037診断用: G1 の out-of-fold スコアが n_starters 付きで保持される
+    assert 0 in runner.fold_oof_g1
+    assert {"race_id", "horse_id", "score", "is_winner", "n_starters"} <= set(
+        runner.fold_oof_g1[0].columns
+    )
+
     # y_true は同着頭数で等分済み（D-074）。今回の fixture に同着は無いので
     # レースごとの合計は常に1.0（勝者1頭）になる
     y_true_sums = out.group_by("race_id").agg(pl.col("y_true").sum().alias("s"))["s"].to_list()
