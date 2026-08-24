@@ -101,6 +101,7 @@ from umagic.features.relative import relativize
 from umagic.stage1 import LightGBMStage1Model, build_inputs as stage1_build_inputs
 from umagic.stage1 import build_target as stage1_build_target
 from umagic.stage1 import predict_f102
+from umagic.track_variant import fit_track_variant, horse_effect_series
 from umagic.stage2 import (
     apply_category_mappings,
     build_category_mappings,
@@ -262,16 +263,61 @@ def stage1_fit_all(
 
 
 # ---------------------------------------------------------------------------
+# F-301: 馬場差推定のクロスフィッティング（D-106）
+# ---------------------------------------------------------------------------
+
+def track_variant_fit_all(
+    conn: duckdb.DuckDBPyConnection, fold: Fold, train_ids: list[int], *,
+    n_blocks: int = DEFAULT_N_BLOCKS,
+) -> pl.DataFrame:
+    """fold あたり5回の `F-301` 推定をまとめ、`F-302` が使える時系列にする（`D-106`）。
+
+    `training.cross_fit_blocks()` の `n_blocks` 個のブロックそれぞれについて
+    「そのブロックを除いた残りで推定し `as_of` をブロック開始日にする」、
+    加えて「学習期間全体で推定し `as_of` を `fold.valid_start` にする」の
+    計 `n_blocks + 1` 回を実行する（`stage1_fit_all()` と対称の設計）。
+
+    戻り値は `horse_effect_series()` が返す `(horse_id, as_of, effect)` の
+    時系列で、`attach_f302()` に as-of 結合でそのまま渡せる。学習期間の
+    行はブロック `b` の `as_of`（=ブロック `b` の開始日）が「その行自身の
+    日付未満で最も新しい」ものとして引かれ、検証期間の行は学習期間全体の
+    推定（`as_of=fold.valid_start`）を引く（ブロック境界日はすべて
+    `valid_start` より前のため）。
+    """
+    if not train_ids:
+        return horse_effect_series([])
+
+    train_dated = _race_ids_by_date(conn, train_ids)
+    blocks = cross_fit_blocks(fold, n_blocks=n_blocks)
+
+    fits = []
+    for b_start, b_end in blocks:
+        block_ids = set(_ids_in_range(train_dated, b_start, b_end))
+        rest_ids = [r for r in train_ids if r not in block_ids]
+        if not rest_ids:
+            continue
+        fits.append(fit_track_variant(conn, rest_ids, as_of=b_start))
+
+    fits.append(fit_track_variant(conn, train_ids, as_of=fold.valid_start))
+    return horse_effect_series(fits)
+
+
+# ---------------------------------------------------------------------------
 # Stage 2: 特徴量行列の組み立て（003 全特徴量 + F-102/F-104/F-302 の接続）
 # ---------------------------------------------------------------------------
 
 def assemble_stage2_matrix(
     conn: duckdb.DuckDBPyConnection, race_ids: list[int], *, as_of: date, f102: pl.DataFrame,
+    horse_effects: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """Stage 2 の入力行列を組み立てる。
 
     `f102`: `race_id, f102` の2列。`race_ids` に含まれるが `f102` に
     無いレースは `f102` が `null` になる（`D-091`。ラップ本数不足など）。
+
+    `horse_effects`: `track_variant_fit_all()` が返す `F-301` の時系列
+    （`D-106`）。省略時（`None`）は空扱いになり `f302` が全行 `NaN`
+    になる（`D-060`、`013` を呼ばない経路の後方互換）。
     """
     if not race_ids:
         return pl.DataFrame(schema={"race_id": pl.Int64, "horse_id": pl.Int64})
@@ -286,10 +332,19 @@ def assemble_stage2_matrix(
 
     base = compute_f104(base)  # f102 × f103_z（f103 の relativize は本関数が内部で行う）
 
-    empty_horse_effects = pl.DataFrame(
-        schema={"horse_id": pl.Int64, "as_of": pl.Date, "effect": pl.Float64}
-    )
-    base = attach_f302(base, empty_horse_effects)  # 013 未実装。D-060 により全行 NaN
+    if horse_effects is None:
+        horse_effects = pl.DataFrame(
+            schema={"horse_id": pl.Int64, "as_of": pl.Date, "effect": pl.Float64}
+        )
+    # attach_f302() は `date`（対象レースの日付）で as-of 結合する（D-107）。
+    # 一時的に結合し、使い終わったら落とす（呼び出し側の後続 join と
+    # 列名が衝突しないようにするため。n_starters と同じ扱い）
+    dated_for_f302 = conn.execute(
+        "SELECT race_id, date FROM races WHERE race_id = ANY(?)", [race_ids]
+    ).pl()
+    base = base.join(dated_for_f302, on="race_id", how="left")
+    base = attach_f302(base, horse_effects)
+    base = base.drop("date")
 
     # F-901（レース内相対化）: race_level でも category でも unavailable 指示子でもない列
     # 「f103」は compute_f104 が内部で既に relativize 済み（f103_z / f103_rank が
@@ -362,9 +417,14 @@ class Stage2FoldRunner:
             f102_valid.select(["race_id", "f102"]),
         ])
 
+        # --- F-301（D-106） ---
+        horse_effects = track_variant_fit_all(conn, fold, train_ids, n_blocks=self.n_blocks)
+
         # --- Stage 2 入力行列（train + valid まとめて1回、fold.valid_start で as_of） ---
         all_ids = train_ids + valid_ids
-        x_all = assemble_stage2_matrix(conn, all_ids, as_of=fold.valid_start, f102=f102_all)
+        x_all = assemble_stage2_matrix(
+            conn, all_ids, as_of=fold.valid_start, f102=f102_all, horse_effects=horse_effects,
+        )
         labels_all = build_labels(conn, all_ids)
         dated = _race_ids_by_date(conn, all_ids)
 
