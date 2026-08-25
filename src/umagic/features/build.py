@@ -7,6 +7,11 @@
 `race_ids` を指定しないときの対象レースは `date < as_of`。**まだ結果が
 確定していない、あるいは as_of 時点で未来のレースを既定の対象に含めない**
 ため。特定レース（推論対象）を明示的に含めたいときは `race_ids` で渡す。
+
+基底集合は `出走取消`/`競走除外` を除く（`build_labels()` と同じ条件、
+`D-093`/`D-094`）。含めると `F-901`（`relativize()`）の `_rank` 列が
+`races.n_starters`（実出走頭数）より多い頭数でランキングされ、比率が
+1.0 を超える（`D-109`）。
 """
 
 from __future__ import annotations
@@ -17,19 +22,25 @@ from typing import Protocol
 import duckdb
 import polars as pl
 
-_BASE_SQL_BY_RACE_IDS = """
+# `出走取消`/`競走除外` を除く（`D-093`/`D-094` の `build_labels()` と同じ
+# 条件に揃える）。含めると `races.n_starters`（実出走頭数のみ）を分母に
+# 使う `F-901`（`relativize()`）の `_rank` 列が、出走取消・競走除外の
+# 馬をランキングに含めたまま計算され、1.0 を超える値になる（`D-109`）。
+_RUNNING_STATUSES = "('出走', '降着', '競走中止', '失格')"
+
+_BASE_SQL_BY_RACE_IDS = f"""
     SELECT ru.race_id, ru.horse_id
     FROM runners ru
     JOIN races r USING (race_id)
-    WHERE r.race_id = ANY(?)
+    WHERE r.race_id = ANY(?) AND ru.status IN {_RUNNING_STATUSES}
     ORDER BY ru.race_id, ru.horse_id
 """
 
-_BASE_SQL_BY_AS_OF = """
+_BASE_SQL_BY_AS_OF = f"""
     SELECT ru.race_id, ru.horse_id
     FROM runners ru
     JOIN races r USING (race_id)
-    WHERE r.date < ?
+    WHERE r.date < ? AND ru.status IN {_RUNNING_STATUSES}
     ORDER BY ru.race_id, ru.horse_id
 """
 

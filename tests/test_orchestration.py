@@ -20,8 +20,9 @@ from umagic.orchestration import (
     Stage2FoldRunner,
     apply_g1_calibration,
     assemble_stage2_matrix,
+    track_variant_fit_all,
 )
-from umagic.training import run_walk_forward
+from umagic.training import make_folds, run_walk_forward
 
 
 @pytest.fixture(scope="module")
@@ -190,6 +191,38 @@ def test_race_ids_in_range_excludes_sealed_g1():
 
     assert 1 not in ids  # G1・封印期間内 → 除外
     assert 2 in ids  # 非G1 → 封印されない
+
+
+def test_include_track_variant_toggle_controls_f302(orch_conn):
+    """`Stage2FoldRunner.include_track_variant`（`D-110` の比較実験用）:
+    **既定は `False`**（`D-110`: `F-302` が7fold全てで `all` 母集団を悪化
+    させたため）。`False` なら `F-301` を呼ばず `f302` が全欠損のまま、
+    `True` を明示すれば `track_variant_fit_all()` の結果が使われ `f302`
+    に実値が入る。
+    """
+    fold = make_folds(orch_conn, today=date(2026, 1, 1))[0]
+
+    off = Stage2FoldRunner(today=date(2026, 1, 1))
+    assert off.include_track_variant is False  # 既定値（D-110）
+    out_off = off.predict_fold(orch_conn, fold)
+    assert out_off.height > 0  # 結線自体は例外なく走る
+
+    on = Stage2FoldRunner(today=date(2026, 1, 1), include_track_variant=True)
+    train_ids = on._race_ids(orch_conn, fold.train_start, fold.train_end)
+    valid_ids = on._race_ids(orch_conn, fold.valid_start, fold.valid_end)
+    horse_effects_on = track_variant_fit_all(orch_conn, fold, train_ids, n_blocks=on.n_blocks)
+    horse_effects_off = None  # include_track_variant=False のときの assemble 呼び出しと同じ
+
+    f102 = pl.DataFrame(schema={"race_id": pl.Int64, "f102": pl.Float64})
+    all_ids = train_ids + valid_ids
+    mat_on = assemble_stage2_matrix(
+        orch_conn, all_ids, as_of=fold.valid_start, f102=f102, horse_effects=horse_effects_on,
+    )
+    mat_off = assemble_stage2_matrix(
+        orch_conn, all_ids, as_of=fold.valid_start, f102=f102, horse_effects=horse_effects_off,
+    )
+    assert mat_off["f302"].is_null().all()
+    assert not mat_on["f302"].is_null().all()
 
 
 def test_walk_forward_end_to_end_smoke(orch_conn):

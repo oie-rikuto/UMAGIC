@@ -393,6 +393,12 @@ class Stage2FoldRunner:
     min_category_count: int = DEFAULT_MIN_CATEGORY_COUNT
     num_boost_round: int = DEFAULT_NUM_BOOST_ROUND
     early_stopping_rounds: int = DEFAULT_EARLY_STOPPING_ROUNDS
+    # F-301/F-302（D-104〜D-108）を組み込むか。**既定は無効**（D-110）。
+    # D-109（build_features() のバグ修正）を反映した汚染されていない
+    # 基準でも、7fold walk-forward で all 母集団が7fold全て悪化した
+    # （+0.047〜+0.087、v6→v7）。R-023 を改善するはずの機能が悪化させて
+    # いるため、原因（Q-041/Q-042）が分かるまで既定で無効にする
+    include_track_variant: bool = False
     fold_calibrators: dict[int, Calibrator] = field(default_factory=dict)
     fold_inner_metrics: dict[int, dict] = field(default_factory=dict)
     fold_valid_scores: dict[int, pl.DataFrame] = field(default_factory=dict)
@@ -418,7 +424,10 @@ class Stage2FoldRunner:
         ])
 
         # --- F-301（D-106） ---
-        horse_effects = track_variant_fit_all(conn, fold, train_ids, n_blocks=self.n_blocks)
+        horse_effects = (
+            track_variant_fit_all(conn, fold, train_ids, n_blocks=self.n_blocks)
+            if self.include_track_variant else None
+        )
 
         # --- Stage 2 入力行列（train + valid まとめて1回、fold.valid_start で as_of） ---
         all_ids = train_ids + valid_ids

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import polars as pl
+
 from tests.conftest import NOW
 from umagic.features.build import build_features
 
@@ -92,3 +94,28 @@ def test_empty_feature_fns_returns_key_columns_only(conn):
     _seed(conn)
     df = build_features(conn, as_of=date(2024, 1, 1), feature_fns=[])
     assert df.columns == ["race_id", "horse_id"]
+
+
+def test_base_population_excludes_scratched_and_withdrawn(conn):
+    """`D-109`: 出走取消・競走除外の馬は基底集合に含めない（`build_labels()` と同じ条件）。
+
+    含めると `n_starters`（実出走頭数）より多い頭数が `F-901` の `_rank`
+    計算に混入し、比率が1.0を超える（発見の経緯は `D-109`）。
+    """
+    _race(conn, 10, date(2022, 1, 1), race_number=10)
+    conn.execute(
+        "INSERT INTO horses VALUES (?, 'h', NULL, NULL, NULL, NULL, 'netkeiba_jra', ?), "
+        "(?, 'h', NULL, NULL, NULL, NULL, 'netkeiba_jra', ?), "
+        "(?, 'h', NULL, NULL, NULL, NULL, 'netkeiba_jra', ?)",
+        [101, NOW, 102, NOW, 103, NOW],
+    )
+    conn.execute(
+        "INSERT INTO runners (race_id, horse_id, number, status, finish_pos, time_sec, "
+        "source, fetched_at) VALUES "
+        "(10, 101, 1, '出走', 1, 100.0, 'netkeiba_jra', ?), "
+        "(10, 102, 2, '出走取消', NULL, NULL, 'netkeiba_jra', ?), "
+        "(10, 103, 3, '競走除外', NULL, NULL, 'netkeiba_jra', ?)",
+        [NOW, NOW, NOW],
+    )
+    df = build_features(conn, as_of=date(2024, 1, 1), race_ids=[10], feature_fns=[])
+    assert set(df.filter(pl.col("race_id") == 10)["horse_id"].to_list()) == {101}
