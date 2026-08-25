@@ -84,6 +84,7 @@ from umagic.features.f201 import compute_f201
 from umagic.features.f202 import compute_f202
 from umagic.features.f302 import attach_f302
 from umagic.features.f303 import compute_f303
+from umagic.features.f304 import compute_f304
 from umagic.features.f501 import compute_f501
 from umagic.features.f503 import compute_f503
 from umagic.features.f601 import compute_f601
@@ -119,7 +120,7 @@ from umagic.training import DEFAULT_SEALED_YEARS, Fold, cross_fit_blocks, run_wa
 # ---------------------------------------------------------------------------
 
 FEATURE_FNS: list[FeatureFn] = [
-    compute_f101, compute_f103, compute_f201, compute_f202, compute_f303,
+    compute_f101, compute_f103, compute_f201, compute_f202, compute_f303, compute_f304,
     compute_f501, compute_f503, compute_f601, compute_f602, compute_f603,
     compute_f701, compute_f702, compute_f703, compute_f704,
     compute_f801, compute_f802, compute_f803, compute_f804,
