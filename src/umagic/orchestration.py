@@ -157,6 +157,15 @@ DEFAULT_N_BLOCKS = 4
 DEFAULT_NUM_BOOST_ROUND = 200
 DEFAULT_EARLY_STOPPING_ROUNDS = 20
 
+# D-113（2026-08-25）: `Q-039` の G1 OOF 探索で、`all`・G1 OOF 双方
+# 3fold全て改善する唯一の設定群だった。7fold walk-forward（`R-023`の
+# 判定指標そのもの）で確認し、`all`が7fold全て（-0.028〜-0.039の狭い
+# 幅）、G1（135レース集計）が-0.0270、いずれも改善したため既定にした
+# （`v6`基準比: G1 model 2.3355→2.3085、all model 2.2194→2.1853）。
+# LightGBM既定は両方とも10.0。
+DEFAULT_CAT_SMOOTH = 200.0
+DEFAULT_CAT_L2 = 200.0
+
 
 def _race_ids_by_date(conn: duckdb.DuckDBPyConnection, race_ids: list[int]) -> pl.DataFrame:
     if not race_ids:
@@ -399,6 +408,12 @@ class Stage2FoldRunner:
     # （+0.047〜+0.087、v6→v7）。R-023 を改善するはずの機能が悪化させて
     # いるため、原因（Q-041/Q-042）が分かるまで既定で無効にする
     include_track_variant: bool = False
+    # LightGBM の `params` にそのまま合流する追加設定。既定は `D-113`
+    # で確定した `cat_smooth`/`cat_l2`（`Q-039`）。`categorical_feature` は
+    # `predict_fold()` が自前で組み立てるため、ここに含めても上書きされる
+    extra_lgb_params: dict = field(
+        default_factory=lambda: {"cat_smooth": DEFAULT_CAT_SMOOTH, "cat_l2": DEFAULT_CAT_L2}
+    )
     fold_calibrators: dict[int, Calibrator] = field(default_factory=dict)
     fold_inner_metrics: dict[int, dict] = field(default_factory=dict)
     fold_valid_scores: dict[int, pl.DataFrame] = field(default_factory=dict)
@@ -459,7 +474,7 @@ class Stage2FoldRunner:
 
         feature_cols = _feature_columns(train_data)
         cat_idx = [feature_cols.index(c) for c in CATEGORY_COLUMNS if c in feature_cols]
-        params = {"categorical_feature": cat_idx}
+        params = {**self.extra_lgb_params, "categorical_feature": cat_idx}
 
         inner_train = train_data.filter(pl.col("date") < fold.inner_valid_start).sort(["race_id", "horse_id"])
         inner_valid = train_data.filter(pl.col("date") >= fold.inner_valid_start).sort(["race_id", "horse_id"])

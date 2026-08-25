@@ -193,6 +193,21 @@ def test_race_ids_in_range_excludes_sealed_g1():
     assert 2 in ids  # 非G1 → 封印されない
 
 
+def test_extra_lgb_params_merge_and_categorical_feature_wins(orch_conn):
+    """`Stage2FoldRunner.extra_lgb_params`（`Q-039` 検証用フック）:
+    LightGBM の `params` にそのまま合流するが、`categorical_feature` は
+    `predict_fold()` が自前で組み立てた値が常に勝つ（後書き優先）。
+    """
+    runner = Stage2FoldRunner(
+        today=date(2026, 1, 1), n_blocks=2, min_category_count=2,
+        num_boost_round=5, early_stopping_rounds=2,
+        extra_lgb_params={"cat_smooth": 200.0, "cat_l2": 200.0, "categorical_feature": "should_be_overridden"},
+    )
+    fold = make_folds(orch_conn, today=date(2026, 1, 1))[0]
+    out = runner.predict_fold(orch_conn, fold)
+    assert out.height > 0  # 例外なく最後まで走る（LightGBMがcat_smooth/cat_l2を受理する）
+
+
 def test_include_track_variant_toggle_controls_f302(orch_conn):
     """`Stage2FoldRunner.include_track_variant`（`D-110` の比較実験用）:
     **既定は `False`**（`D-110`: `F-302` が7fold全てで `all` 母集団を悪化
