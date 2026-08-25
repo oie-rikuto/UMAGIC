@@ -1,11 +1,16 @@
-"""`F-301` 馬場差推定（`docs/spec/013-track-variant.md` / `D-104`〜`D-107`）。
+"""`F-301` 馬場差推定（`docs/spec/013-track-variant.md` / `D-104`〜`D-107`, `D-111`）。
 
-走破タイムから、レース効果（馬場差 + 展開 + メンバーレベル）と馬効果
-（その馬の真の能力）を交互反復で分離する（`D-104`）。`statsmodels` の
-`MixedLM` も `PyMC` も使わない（`D-104` の根拠を参照）。
+走破タイムから、レース効果（馬場差 + 展開 + `γ`/`δ` で説明されない
+メンバーレベル）と馬効果（その馬の真の能力）を交互反復で分離する
+（`D-104`）。`statsmodels` の `MixedLM` も `PyMC` も使わない（`D-104` の
+根拠を参照）。
 
 目的変数は `(surface, distance)` ごとに標準化する（`D-105`）。距離帯・
-クラスの固定効果を残し、レース単位の共変量を縮約前に吸収する。
+クラス・グレード（`G1`/`G2`/`G3`/`L`/無し、`D-111`）の固定効果を残し、
+レース単位の共変量を縮約前に吸収する。`race_class` は `G1`〜`G3` を
+含む全グレードを `'オープン'` 1水準に丸めるため、`grade` を独立の
+固定効果として追加しないとメンバーレベルの実力差がレース効果 `u_j`
+に漏れる（`Q-042` の実測で確認）。
 
 `as_of` 再推定の粒度は `training.cross_fit_blocks()` の4ブロックに揃える
 （`D-106`）。ここでは1回ぶんの推定（`fit_track_variant`）のみを実装し、
@@ -41,7 +46,8 @@ _DISTANCE_BAND_CASE = """
 _POPULATION_SQL = f"""
 SELECT ru.race_id, ru.horse_id, CAST(ru.time_sec AS DOUBLE) AS time_sec,
        r.surface, r.distance, {_DISTANCE_BAND_CASE} AS distance_band,
-       COALESCE(r.race_class, '不明') AS race_class
+       COALESCE(r.race_class, '不明') AS race_class,
+       COALESCE(r.grade, '無し') AS grade
 FROM runners ru
 JOIN races r ON r.race_id = ru.race_id
 WHERE ru.status IN ('出走', '降着', '失格')
@@ -102,34 +108,44 @@ def _compute_scale(pop: pl.DataFrame) -> pl.DataFrame:
 
 
 def _design_matrix(pop: pl.DataFrame) -> tuple[np.ndarray, list[str]]:
-    """固定効果（`(surface, distance_band)` 交互作用 + `race_class`）の設計行列。
+    """固定効果（`(surface, distance_band)` 交互作用 + `race_class` + `grade`）の設計行列。
+
+    `grade`（`D-111`）: `race_class` は G1〜G3・L・格付なしのオープン特別を
+    すべて `'オープン'` 1水準に丸めており、グレード間の実力差を区別しない。
+    実データで `(surface, distance_band)` を揃えても `grade` 別のレース効果
+    残差が有意かつ2つの独立5年間で再現する順序（`G1` が最も速い方向、
+    `G2` が最も遅い方向）を持つことを確認した（`Q-042`）ため、`grade` を
+    独立の固定効果因子として追加する。
 
     各因子の水準は実データに現れたものだけを使い、辞書式で最小の水準を
     基準（ダミー変数を作らない）として落とす。切片列を含む。水準の順序は
     ソート済みで決定的（`R-021`）。
     """
     n = pop.height
-    sd_key = (pop["surface"] + "_" + pop["distance_band"]).to_list()
-    rc = pop["race_class"].to_list()
-
-    sd_levels = sorted(set(sd_key))
-    rc_levels = sorted(set(rc))
+    factors = {
+        "sd": (pop["surface"] + "_" + pop["distance_band"]).to_list(),
+        "rc": pop["race_class"].to_list(),
+        "gr": pop["grade"].to_list(),
+    }
 
     cols = ["_intercept"]
-    cols += [f"sd:{lv}" for lv in sd_levels[1:]]   # 先頭水準を基準として落とす
-    cols += [f"rc:{lv}" for lv in rc_levels[1:]]
+    levels: dict[str, list[str]] = {}
+    for prefix, values in factors.items():
+        lv = sorted(set(values))
+        levels[prefix] = lv
+        cols += [f"{prefix}:{v}" for v in lv[1:]]  # 先頭水準を基準として落とす
 
     X = np.zeros((n, len(cols)), dtype=np.float64)
     X[:, 0] = 1.0
-    sd_index = {lv: i for i, lv in enumerate(sd_levels)}
-    rc_index = {lv: i for i, lv in enumerate(rc_levels)}
-    for row, (k, c) in enumerate(zip(sd_key, rc)):
-        si = sd_index[k]
-        if si > 0:
-            X[row, 1 + (si - 1)] = 1.0
-        ci = rc_index[c]
-        if ci > 0:
-            X[row, 1 + (len(sd_levels) - 1) + (ci - 1)] = 1.0
+    offset = 1
+    for prefix, values in factors.items():
+        lv = levels[prefix]
+        idx = {v: i for i, v in enumerate(lv)}
+        for row, v in enumerate(values):
+            i = idx[v]
+            if i > 0:
+                X[row, offset + (i - 1)] = 1.0
+        offset += len(lv) - 1
     return X, cols
 
 
