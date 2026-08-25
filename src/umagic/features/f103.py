@@ -115,25 +115,51 @@ def _raw_beta(pairs: pl.DataFrame) -> pl.DataFrame:
     """`(race_id, horse_id)` ごとに縮約前の生の `β` を計算する。
 
     `p_i` と `d_i`（着差の数値化, `D-064`）がともに揃う過去走が2走未満、
-    または `p_i` の分散が0の場合は `beta=None`（`F-902` の縮約対象外）。
+    または `p_i` の分散が `MIN_VAR_X` 未満の場合は `beta=None`
+    （`F-902` の縮約対象外、`D-102`）。
     過去走が1件も無い `(race_id, horse_id)` は `pairs` に現れないため、
     呼び出し側で対象母集団に left join して `n_past_races=0` を復元すること。
+
+    `_ols_slope()` と同じ二パスの式を Polars でベクトル化している
+    （`D-117`）。逐次和ではなくなるが、実データで結果が一致することと
+    `R-021`（run-to-run の再現性）を保つことを実測で確認している。
     """
     if pairs.is_empty():
         return pl.DataFrame(schema=_BETA_SCHEMA)
 
+    keys = ["race_id", "horse_id"]
     df = pairs.with_columns(
         pl.col("own_margin").map_elements(parse_margin, return_dtype=pl.Float64).alias("d_i")
     )
+    # 出力の行順を Python ループ版（グループの初出順）に合わせる
+    n_past = df.group_by(keys, maintain_order=True).agg(
+        pl.len().cast(pl.Int64).alias("n_past_races")
+    )
 
-    rows: list[tuple] = []
-    for (race_id, horse_id), group in df.group_by(["race_id", "horse_id"], maintain_order=True):
-        n_past_races = group.height
-        valid = group.filter(pl.col("p_i").is_not_null() & pl.col("d_i").is_not_null())
-        beta = _ols_slope(valid["p_i"].to_list(), valid["d_i"].to_list())
-        rows.append((race_id, horse_id, beta, n_past_races, valid.height))
+    # 二パス（平均を引いてから二乗和）にして `_ols_slope()` の式に揃える。
+    # `sum(x²)-n·x̄²` の一パス版は打ち切り誤差が大きく、`D-102` が
+    # 問題にしている var_x 極小の領域で挙動が変わる
+    valid = df.filter(pl.col("p_i").is_not_null() & pl.col("d_i").is_not_null())
+    valid = valid.with_columns(
+        (pl.col("p_i") - pl.col("p_i").mean().over(keys)).alias("_dx"),
+        (pl.col("d_i") - pl.col("d_i").mean().over(keys)).alias("_dy"),
+    )
+    agg = valid.group_by(keys, maintain_order=True).agg(
+        pl.len().cast(pl.Int64).alias("n_valid_pairs"),
+        (pl.col("_dx") ** 2).sum().alias("_var_x"),
+        (pl.col("_dx") * pl.col("_dy")).sum().alias("_cov_xy"),
+    )
+    agg = agg.with_columns(
+        pl.when((pl.col("n_valid_pairs") >= 2) & (pl.col("_var_x") >= MIN_VAR_X))
+        .then(pl.col("_cov_xy") / pl.col("_var_x"))
+        .otherwise(None)
+        .alias("beta")
+    )
 
-    return pl.DataFrame(rows, schema=_BETA_SCHEMA, orient="row")
+    out = n_past.join(agg, on=keys, how="left").with_columns(
+        pl.col("n_valid_pairs").fill_null(0)
+    )
+    return out.select(list(_BETA_SCHEMA.keys()))
 
 
 def _mu_global_daily(beta_dated: pl.DataFrame) -> pl.DataFrame:
