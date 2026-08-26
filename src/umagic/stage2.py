@@ -28,6 +28,7 @@ _CATEGORY_COLS = [
     "f602_prev_grade",
     "f803_surface", "f803_direction", "f803_race_class", "f803_weight_rule", "f803_season",
     "f804_weather", "f804_weather_forecast",
+    "f805_sex",
 ]
 
 
@@ -200,6 +201,21 @@ def _feval(preds: np.ndarray, train_data) -> list[tuple[str, float, bool]]:
     return [("race_logloss", logloss, False), ("ndcg@3", ndcg3, True)]
 
 
+def _objective_params(objective: str, group: list[int], label, weight) -> dict:
+    """目的関数に応じた LightGBM パラメータを返す（`D-095` / `D-130`）。
+
+    `"lambdarank"`（既定、`D-095`）以外に `"pl1"`〜`"pl3"` を受け付ける。
+    `plN` は Plackett-Luce top-N（`D-130`）。**カスタム目的関数では重みを
+    自前で掛ける必要がある**ため、`weight` をそのまま渡す。
+    """
+    if objective == "lambdarank":
+        return {"objective": "lambdarank", "metric": "None"}
+    if objective.startswith("pl") and objective[2:].isdigit():
+        from umagic.plackett_luce import make_pl_objective
+        return {"objective": make_pl_objective(group, label, weight, top_k=int(objective[2:]))}
+    raise ValueError(f"未知の objective: {objective!r}（'lambdarank' / 'pl1'〜'plN'）")
+
+
 def fit_stage2(
     x: pl.DataFrame,
     label: pl.Series,
@@ -213,6 +229,7 @@ def fit_stage2(
     inner_group: pl.Series,
     num_boost_round: int = 200,
     early_stopping_rounds: int = 20,
+    objective: str = "lambdarank",
 ) -> tuple[object, dict]:
     """`lambdarank` を学習する。戻り値: `(Booster, inner検証の指標)`（6節）。
 
@@ -239,7 +256,11 @@ def fit_stage2(
     )
 
     full_params = {
-        "objective": "lambdarank", "metric": "None", "verbose": -1,
+        **_objective_params(
+            objective, group_list, label.to_numpy(),
+            sample_weight.to_numpy() if sample_weight is not None else None,
+        ),
+        "verbose": -1,
         "seed": seed, "bagging_seed": seed, "feature_fraction_seed": seed,
         "deterministic": True, "force_row_wise": True, "num_threads": 1,
         "min_data_in_leaf": 1,
@@ -264,6 +285,7 @@ def fit_stage2(
 def fit_stage2_fixed_rounds(
     x: pl.DataFrame, label: pl.Series, group: pl.Series, *,
     sample_weight: pl.Series | None, seed: int, params: dict, num_boost_round: int,
+    objective: str = "lambdarank",
 ) -> object:
     """`lambdarank` を、早期終了を使わず指定ラウンド数だけ学習する。
 
@@ -290,7 +312,11 @@ def fit_stage2_fixed_rounds(
         free_raw_data=False,
     )
     full_params = {
-        "objective": "lambdarank", "metric": "None", "verbose": -1,
+        **_objective_params(
+            objective, list(group), label.to_numpy(),
+            sample_weight.to_numpy() if sample_weight is not None else None,
+        ),
+        "verbose": -1,
         "seed": seed, "bagging_seed": seed, "feature_fraction_seed": seed,
         "deterministic": True, "force_row_wise": True, "num_threads": 1,
         "min_data_in_leaf": 1,

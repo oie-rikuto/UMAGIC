@@ -98,6 +98,7 @@ from umagic.features.f801 import compute_f801
 from umagic.features.f802 import compute_f802
 from umagic.features.f803 import compute_f803
 from umagic.features.f804 import compute_f804
+from umagic.features.f805 import compute_f805
 from umagic.features.relative import relativize
 from umagic.stage1 import LightGBMStage1Model, build_inputs as stage1_build_inputs
 from umagic.stage1 import build_target as stage1_build_target
@@ -123,7 +124,7 @@ FEATURE_FNS: list[FeatureFn] = [
     compute_f101, compute_f103, compute_f201, compute_f202, compute_f303, compute_f304,
     compute_f501, compute_f503, compute_f601, compute_f602, compute_f603,
     compute_f701, compute_f702, compute_f703, compute_f704,
-    compute_f801, compute_f802, compute_f803, compute_f804,
+    compute_f801, compute_f802, compute_f803, compute_f804, compute_f805,
 ]
 
 # race_level=True の列（003-features.md 4節）。F-901（relativize）を適用しない
@@ -142,6 +143,7 @@ CATEGORY_COLUMNS = frozenset({
     "f602_prev_grade",
     "f803_surface", "f803_direction", "f803_race_class", "f803_weight_rule", "f803_season",
     "f804_weather", "f804_weather_forecast",
+    "f805_sex",
 })
 
 # D-081 / D-092: 2026-08-24、実データでのハイパーパラメータ探索により選定
@@ -409,6 +411,12 @@ class Stage2FoldRunner:
     # （+0.047〜+0.087、v6→v7）。R-023 を改善するはずの機能が悪化させて
     # いるため、原因（Q-041/Q-042）が分かるまで既定で無効にする
     include_track_variant: bool = False
+    # 目的関数（`D-095` / `D-130`）。既定は `lambdarank` のまま変更しない。
+    # `"pl2"` / `"pl3"` は Plackett-Luce top-K。**採用する場合は
+    # `extra_lgb_params` に `learning_rate=0.02` と
+    # `min_sum_hessian_in_leaf=1.0` を併せて渡すこと**（`D-130`。既定の
+    # `min_data_in_leaf=1` のままだと葉の値が発散しうる）
+    objective: str = "lambdarank"
     # LightGBM の `params` にそのまま合流する追加設定。既定は `D-113`
     # で確定した `cat_smooth`/`cat_l2`（`Q-039`）。`categorical_feature` は
     # `predict_fold()` が自前で組み立てるため、ここに含めても上書きされる
@@ -482,6 +490,7 @@ class Stage2FoldRunner:
 
         # --- D-084: inner 検証によるラウンド数の選択（本番モデルのみ） ---
         selection_booster, inner_metrics = fit_stage2(
+            objective=self.objective,
             x=inner_train.select(feature_cols), label=inner_train["label"], group=race_group(inner_train),
             sample_weight=inner_train["sample_weight"], seed=fold.seed, params=params,
             inner_x=inner_valid.select(feature_cols), inner_label=inner_valid["label"],
@@ -494,6 +503,7 @@ class Stage2FoldRunner:
         # --- 本番モデル: 学習期間全体で学習、選ばれたラウンド数を固定
         #     （早期終了そのものを使わない。理由は fit_stage2_fixed_rounds() の docstring） ---
         final_booster = fit_stage2_fixed_rounds(
+            objective=self.objective,
             x=train_data.select(feature_cols), label=train_data["label"], group=race_group(train_data),
             sample_weight=train_data["sample_weight"], seed=fold.seed, params=params, num_boost_round=n_rounds,
         )
@@ -512,6 +522,7 @@ class Stage2FoldRunner:
             if block_data.is_empty() or rest_data.is_empty():
                 continue
             block_model = fit_stage2_fixed_rounds(
+                objective=self.objective,
                 x=rest_data.select(feature_cols), label=rest_data["label"], group=race_group(rest_data),
                 sample_weight=rest_data["sample_weight"], seed=fold.seed, params=params, num_boost_round=n_rounds,
             )
