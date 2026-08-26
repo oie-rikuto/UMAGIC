@@ -169,6 +169,16 @@ DEFAULT_EARLY_STOPPING_ROUNDS = 20
 DEFAULT_CAT_SMOOTH = 200.0
 DEFAULT_CAT_L2 = 200.0
 
+# D-133（2026-08-26）: Plackett-Luce top-3 を既定の目的関数にする。
+# `R-029` が測る勝利確率の尤度そのものを最適化する（`lambdarank` は
+# NDCG を最適化しており目的が一致していなかった、`D-130`）。
+# 7fold walk-forward で `all` 捕捉率 0.6767→0.6951・G1 0.5308→0.5932。
+# 学習率とヘシアン下限は PL と組で必要になる（`D-130`）。
+DEFAULT_OBJECTIVE = "pl3"
+DEFAULT_LEARNING_RATE = 0.02
+DEFAULT_MIN_SUM_HESSIAN = 1.0
+DEFAULT_NUM_BOOST_ROUND_PL = 1200
+
 
 def _race_ids_by_date(conn: duckdb.DuckDBPyConnection, race_ids: list[int]) -> pl.DataFrame:
     if not race_ids:
@@ -403,7 +413,8 @@ class Stage2FoldRunner:
     n_blocks: int = DEFAULT_N_BLOCKS
     class_weights: dict[str | None, float] = field(default_factory=lambda: dict(DEFAULT_CLASS_WEIGHTS))
     min_category_count: int = DEFAULT_MIN_CATEGORY_COUNT
-    num_boost_round: int = DEFAULT_NUM_BOOST_ROUND
+    # `lr=0.02` では早期終了が350〜750ラウンド付近で来るため上限を上げる（`D-133`）
+    num_boost_round: int = DEFAULT_NUM_BOOST_ROUND_PL
     early_stopping_rounds: int = DEFAULT_EARLY_STOPPING_ROUNDS
     # F-301/F-302（D-104〜D-108）を組み込むか。**既定は無効**（D-110）。
     # D-109（build_features() のバグ修正）を反映した汚染されていない
@@ -411,17 +422,22 @@ class Stage2FoldRunner:
     # （+0.047〜+0.087、v6→v7）。R-023 を改善するはずの機能が悪化させて
     # いるため、原因（Q-041/Q-042）が分かるまで既定で無効にする
     include_track_variant: bool = False
-    # 目的関数（`D-095` / `D-130`）。既定は `lambdarank` のまま変更しない。
-    # `"pl2"` / `"pl3"` は Plackett-Luce top-K。**採用する場合は
-    # `extra_lgb_params` に `learning_rate=0.02` と
-    # `min_sum_hessian_in_leaf=1.0` を併せて渡すこと**（`D-130`。既定の
-    # `min_data_in_leaf=1` のままだと葉の値が発散しうる）
-    objective: str = "lambdarank"
+    # 目的関数（`D-095` / `D-130` / `D-133`）。`R-029` が測る勝利確率の
+    # 尤度そのものを最適化する Plackett-Luce top-3 を既定にする。
+    # `lambdarank` は NDCG（順位）を最適化しており目的が一致していなかった。
+    # **`learning_rate` と `min_sum_hessian_in_leaf` の既定も併せて変えている**
+    # （下記 `extra_lgb_params`。既定の `min_data_in_leaf=1` のままでは
+    # ヘシアン `p(1-p)` が0に寄ったとき葉の値が発散しうる）
+    objective: str = DEFAULT_OBJECTIVE
     # LightGBM の `params` にそのまま合流する追加設定。既定は `D-113`
     # で確定した `cat_smooth`/`cat_l2`（`Q-039`）。`categorical_feature` は
     # `predict_fold()` が自前で組み立てるため、ここに含めても上書きされる
     extra_lgb_params: dict = field(
-        default_factory=lambda: {"cat_smooth": DEFAULT_CAT_SMOOTH, "cat_l2": DEFAULT_CAT_L2}
+        default_factory=lambda: {
+            "cat_smooth": DEFAULT_CAT_SMOOTH, "cat_l2": DEFAULT_CAT_L2,
+            "learning_rate": DEFAULT_LEARNING_RATE,
+            "min_sum_hessian_in_leaf": DEFAULT_MIN_SUM_HESSIAN,
+        }
     )
     fold_calibrators: dict[int, Calibrator] = field(default_factory=dict)
     fold_inner_metrics: dict[int, dict] = field(default_factory=dict)
