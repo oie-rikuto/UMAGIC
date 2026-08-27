@@ -446,6 +446,24 @@ fopp_n          = 相手の延べ数
 
 `race_level`: `False`
 
+#### F-808 騎手×馬のコンビ成績
+
+(jockey_id, horse_id) ペアでの過去の騎乗成績。
+
+```
+fjc_relfinish_mean = AVG(finish_pos / n_starters)   過去の騎乗全体（低いほど好走）
+fjc_relfinish_best = MIN(finish_pos / n_starters)   最良成績
+fjc_win_rate        = AVG(1着なら1、それ以外0)
+```
+
+**`F-701`（騎手の一般実力）・`F-702`（乗り替わり、回数のみ）・`F-703`（厩舎の勝負度）のいずれも、このコンビでの過去成績を持たない（`D-140`）。** `F-702` は「何回乗ったか」を持つが「その騎乗の成績」を持たない。コンビでの過去成績は他の行（そのペアが一致する過去レース）にまたがる集約であり、`jockey_id` の一般実力と馬自身の能力からは導出できない。
+
+**尺度は相対着順（`finish_pos / n_starters`）にする。** `D-108`/`D-116` が示した「標本の少ないエンティティの効果量が無制限に発散する」問題を避けるため、元から `[0,1]` に有界な量を選んだ。
+
+**「回数」（`fjc_n`）は含めない（`D-140`）。** `F-702` の `f702_jockey_experience_count` と重複し、足すと一貫して悪化する。
+
+`race_level`: `False`
+
 #### F-805 出走馬の基礎情報
 
 馬齢（`runners.age`）、性別（`runners.sex`、牡/牝/セ）、斤量（`runners.weight_carried`）。
