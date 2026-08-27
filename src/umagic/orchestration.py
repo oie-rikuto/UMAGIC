@@ -99,6 +99,8 @@ from umagic.features.f802 import compute_f802
 from umagic.features.f803 import compute_f803
 from umagic.features.f804 import compute_f804
 from umagic.features.f805 import compute_f805
+from umagic.features.f806 import compute_f806
+from umagic.features.f807 import compute_f807
 from umagic.features.relative import relativize
 from umagic.stage1 import LightGBMStage1Model, build_inputs as stage1_build_inputs
 from umagic.stage1 import build_target as stage1_build_target
@@ -125,6 +127,7 @@ FEATURE_FNS: list[FeatureFn] = [
     compute_f501, compute_f503, compute_f601, compute_f602, compute_f603,
     compute_f701, compute_f702, compute_f703, compute_f704,
     compute_f801, compute_f802, compute_f803, compute_f804, compute_f805,
+    compute_f806, compute_f807,
 ]
 
 # race_level=True の列（003-features.md 4節）。F-901（relativize）を適用しない
@@ -144,6 +147,7 @@ CATEGORY_COLUMNS = frozenset({
     "f803_surface", "f803_direction", "f803_race_class", "f803_weight_rule", "f803_season",
     "f804_weather", "f804_weather_forecast",
     "f805_sex",
+    "f807_prev_surface", "f807_prev_course",
 })
 
 # D-081 / D-092: 2026-08-24、実データでのハイパーパラメータ探索により選定

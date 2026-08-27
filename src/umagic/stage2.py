@@ -29,6 +29,7 @@ _CATEGORY_COLS = [
     "f803_surface", "f803_direction", "f803_race_class", "f803_weight_rule", "f803_season",
     "f804_weather", "f804_weather_forecast",
     "f805_sex",
+    "f807_prev_surface", "f807_prev_course",
 ]
 
 
