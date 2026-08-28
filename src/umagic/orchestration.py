@@ -101,8 +101,9 @@ from umagic.features.f804 import compute_f804
 from umagic.features.f805 import compute_f805
 from umagic.features.f806 import compute_f806
 from umagic.features.f807 import compute_f807
-# compute_f808 は import するが FEATURE_FNS には入れない（D-142）
+# compute_f808 は import するが FEATURE_FNS には入れない（D-142 / D-143）
 from umagic.features.f808 import compute_f808  # noqa: F401
+from umagic.features.f809 import compute_f809
 from umagic.features.relative import relativize
 from umagic.stage1 import LightGBMStage1Model, build_inputs as stage1_build_inputs
 from umagic.stage1 import build_target as stage1_build_target
@@ -129,7 +130,7 @@ FEATURE_FNS: list[FeatureFn] = [
     compute_f501, compute_f503, compute_f601, compute_f602, compute_f603,
     compute_f701, compute_f702, compute_f703, compute_f704,
     compute_f801, compute_f802, compute_f803, compute_f804, compute_f805,
-    compute_f806, compute_f807,  # F-808 は D-142 により既定から除外
+    compute_f806, compute_f807, compute_f809,  # F-808 は D-142/D-143 により除外
 ]
 
 # race_level=True の列（003-features.md 4節）。F-901（relativize）を適用しない
