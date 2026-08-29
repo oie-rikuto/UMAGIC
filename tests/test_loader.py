@@ -89,3 +89,38 @@ def test_reingest_rejected_rows_do_not_double(conn):
     ingest_race(conn, fetcher, source, "7")
     n = conn.execute("SELECT COUNT(*) FROM rejected_rows").fetchone()[0]
     assert n == 1
+
+
+def _owner_runner(**kw):
+    base = dict(finish="1", frame=1, number=1, name="馬", passage="1-1-1-1")
+    base.update(kw)
+    return base
+
+
+def test_owner_resolved_and_written(conn):
+    """馬主（`D-165`）が `owners` に登録され `runners.owner_id` に書かれる。"""
+    html = build_archive_html(
+        race_id=8, date_y=2023, date_m=1, date_d=1, corner_nos=[1, 2, 3, 4],
+        runners=[_owner_runner(owner_key="180800", owner_name="東京ホースレーシング")],
+    )
+    fetcher = _FixedFetcher(html)
+    source = NetkeibaJraSource(fetcher)
+    ingest_race(conn, fetcher, source, "8")
+
+    row = conn.execute(
+        "SELECT o.owner_id, o.name FROM runners ru JOIN owners o USING (owner_id) "
+        "WHERE ru.race_id = 8"
+    ).fetchone()
+    assert row is not None
+    assert row[1] == "東京ホースレーシング"
+
+    # 同じ馬主が別レースに出ても行が増えない（`resolve()` の冪等性）
+    html2 = build_archive_html(
+        race_id=9, date_y=2023, date_m=1, date_d=2, corner_nos=[1, 2, 3, 4],
+        runners=[_owner_runner(owner_key="180800", owner_name="東京ホースレーシング")],
+    )
+    fetcher2 = _FixedFetcher(html2)
+    source2 = NetkeibaJraSource(fetcher2)
+    ingest_race(conn, fetcher2, source2, "9")
+    n_owners = conn.execute("SELECT COUNT(*) FROM owners").fetchone()[0]
+    assert n_owners == 1

@@ -472,6 +472,27 @@ def test_jockey_and_trainer_names_parsed():
     assert r["jockey_source_key"] == "00000"
 
 
+# --- D-165: 馬主 -------------------------------------------------------------
+
+def test_owner_source_key_and_name_parsed():
+    """`馬主` 欄は `/owner/result/recent/{id}/` へのリンク（`D-165`）。"""
+    html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
+                              corner_nos=[1, 2, 3, 4],
+                              runners=[_runner(passage="1-1-1-1",
+                                               owner_key="180800",
+                                               owner_name="東京ホースレーシング")])
+    r = parse_archive(_page(html)).runners[0]
+    assert r["owner_source_key"] == "180800"
+    assert r["owner_name"] == "東京ホースレーシング"
+
+
+def test_owner_id_link_pattern_recognized():
+    """`_parse_id_link` は騎手・調教師と同じ `owner/result/recent/{id}/` 形式を認識する。"""
+    from umagic.sources.netkeiba import _parse_id_link
+    cell = '<a href="/owner/result/recent/180800/" title="東京ホースレーシング">東京ホースレーシング</a>'
+    assert _parse_id_link(cell) == "180800"
+
+
 def test_trainer_name_excludes_affiliation_marker():
     """調教師欄は先頭に [東] 等が付く。名前に混ぜない（D-057）。"""
     from umagic.sources.netkeiba import _parse_link_name

@@ -52,7 +52,7 @@ RUNNER_ROW_TMPL = """
 <td>{horse_weight}</td>
 <td></td><td></td><td></td>
 <td class="txt_l">{affiliation}<a href="/trainer/result/recent/{trainer_key}/" title="t">{trainer_key}</a></td>
-<td class="txt_l"><a href="/owner/result/recent/1/" title="o">owner</a></td>
+<td class="txt_l"><a href="/owner/result/recent/{owner_key}/" title="o">{owner_name}</a></td>
 <td>{prize}</td>
 </tr>
 """
@@ -109,6 +109,7 @@ def build_archive_html(
             "jockey_key": "00000", "time": "", "margin": "", "passage": "",
             "last3f": "", "odds": "", "popularity": "", "horse_weight": "",
             "trainer_key": "00000", "prize": "", "affiliation": "[東]",
+            "owner_key": "000000", "owner_name": "owner",
             **r,
         }))
     finish_table = (

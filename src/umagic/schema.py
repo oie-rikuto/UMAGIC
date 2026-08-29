@@ -1,8 +1,11 @@
 """中間スキーマ（`docs/spec/001-schema.md`）。
 
-ソース非依存の9テーブルを定義する（`D-009` / `D-057`）。作成順は外部キーの依存による:
-`source_ids` → `horses` → `jockeys` → `trainers` → `races` → `runners` →
+ソース非依存の10テーブルを定義する（`D-009` / `D-057` / `D-165`）。作成順は外部キーの依存による:
+`source_ids` → `horses` → `jockeys` → `trainers` → `owners` → `races` → `runners` →
 `payouts` → `odds` → `laps`（`D-057`）。
+
+`owners`（馬主）は `D-165` で追加した。`jockeys`/`trainers` と同じ形の
+エンティティで、`source_ids` 経由の名寄せ（`D-035`）に加わる。
 
 運用テーブル（`fetch_log` / `rejected_rows` / `quality_runs` / `quality_findings`）は
 ここでは定義しない。`source` / `fetched_at` を持たないため対象外（`D-046`）。
@@ -15,13 +18,13 @@ import duckdb
 DDL_STATEMENTS: list[str] = [
     """
     CREATE TABLE source_ids (
-        entity_type  VARCHAR   NOT NULL,   -- 'race' | 'horse' | 'jockey' | 'trainer'
+        entity_type  VARCHAR   NOT NULL,   -- 'race' | 'horse' | 'jockey' | 'trainer' | 'owner'
         internal_id  BIGINT    NOT NULL,
         source       VARCHAR   NOT NULL,
         source_key   VARCHAR   NOT NULL,   -- ソース側のID。netkeiba のレースIDは12桁
         fetched_at   TIMESTAMP NOT NULL,
         PRIMARY KEY (entity_type, source, source_key),
-        CHECK (entity_type IN ('race', 'horse', 'jockey', 'trainer'))
+        CHECK (entity_type IN ('race', 'horse', 'jockey', 'trainer', 'owner'))
     )
     """,
     """
@@ -51,6 +54,14 @@ DDL_STATEMENTS: list[str] = [
     """
     CREATE TABLE trainers (
         trainer_id  BIGINT    PRIMARY KEY,
+        name        VARCHAR   NOT NULL,
+        source      VARCHAR   NOT NULL,
+        fetched_at  TIMESTAMP NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE owners (
+        owner_id    BIGINT    PRIMARY KEY,
         name        VARCHAR   NOT NULL,
         source      VARCHAR   NOT NULL,
         fetched_at  TIMESTAMP NOT NULL
@@ -104,6 +115,7 @@ DDL_STATEMENTS: list[str] = [
         frame           SMALLINT,
         jockey_id       BIGINT,
         trainer_id      BIGINT,
+        owner_id        BIGINT,
         weight_carried  DECIMAL(4,1),
         horse_weight    SMALLINT,
         weight_diff     SMALLINT,
@@ -174,7 +186,7 @@ DDL_STATEMENTS: list[str] = [
 
 # 作成順どおりのテーブル名。テストと検査で参照する。
 TABLE_NAMES: list[str] = [
-    "source_ids", "horses", "jockeys", "trainers",
+    "source_ids", "horses", "jockeys", "trainers", "owners",
     "races", "runners", "payouts", "odds", "laps",
 ]
 

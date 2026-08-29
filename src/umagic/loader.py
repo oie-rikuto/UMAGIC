@@ -112,16 +112,19 @@ def _write_race(conn: duckdb.DuckDBPyConnection, source: str, parsed: ParsedRace
         trainer_id = _resolve_person(
             conn, "trainer", "trainers", "trainer_id", source, fetched_at,
             r["trainer_source_key"], r.get("trainer_name"))
+        owner_id = _resolve_person(
+            conn, "owner", "owners", "owner_id", source, fetched_at,
+            r.get("owner_source_key"), r.get("owner_name"))
 
         conn.execute(
             """
             INSERT INTO runners (race_id, horse_id, number, frame, jockey_id, trainer_id,
-                weight_carried, horse_weight, weight_diff, age, sex, odds_win, popularity,
-                status, finish_pos, margin, time_sec, last_3f, corners, affiliation,
-                source, fetched_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                owner_id, weight_carried, horse_weight, weight_diff, age, sex, odds_win,
+                popularity, status, finish_pos, margin, time_sec, last_3f, corners,
+                affiliation, source, fetched_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            [race_id, horse_id, r["number"], r["frame"], jockey_id, trainer_id,
+            [race_id, horse_id, r["number"], r["frame"], jockey_id, trainer_id, owner_id,
              r["weight_carried"], r["horse_weight"], r["weight_diff"], r["age"], r["sex"],
              r["odds_win"], r["popularity"], r["status"], r["finish_pos"], r["margin"],
              r["time_sec"], r["last_3f"], r["corners"], r.get("affiliation"),

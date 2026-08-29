@@ -104,6 +104,7 @@ from umagic.features.f807 import compute_f807
 # compute_f808 は import するが FEATURE_FNS には入れない（D-142 / D-143）
 from umagic.features.f808 import compute_f808  # noqa: F401
 from umagic.features.f809 import compute_f809
+from umagic.features.f810 import compute_f810
 from umagic.features.relative import relativize
 from umagic.stage1 import LightGBMStage1Model, build_inputs as stage1_build_inputs
 from umagic.stage1 import build_target as stage1_build_target
@@ -131,6 +132,7 @@ FEATURE_FNS: list[FeatureFn] = [
     compute_f701, compute_f702, compute_f703, compute_f704,
     compute_f801, compute_f802, compute_f803, compute_f804, compute_f805,
     compute_f806, compute_f807, compute_f809,  # F-808 は D-142/D-143 により除外
+    compute_f810,
 ]
 
 # race_level=True の列（003-features.md 4節）。F-901（relativize）を適用しない
@@ -151,6 +153,7 @@ CATEGORY_COLUMNS = frozenset({
     "f804_weather", "f804_weather_forecast",
     "f805_sex",
     "f807_prev_surface", "f807_prev_course",
+    "f810_owner_id",
 })
 
 # D-081 / D-092: 2026-08-24、実データでのハイパーパラメータ探索により選定
