@@ -46,4 +46,18 @@ def per_row_stat_before(
         d = race_dates[race_id]
         value = conn.execute(stat_sql, [d]).fetchone()[0]
         rows.append((race_id, horse_id, value))
-    return pl.DataFrame(rows, schema=["race_id", "horse_id", "stat"], orient="row")
+    # `schema` は列名だけでなく dtype も明示する（`Q-047` 段階②で発見。`D-176`）。
+    # 型指定を省くと polars は `infer_schema_length`（既定100）ぶんの先頭行から
+    # dtype を推測する。標本期間の最初期（対象データベース全体で最初の数日）は
+    # `stat` が軒並み `None`（「これより前のデータが無い」）になりうるため、
+    # データベースの立ち上がり直後に1日あたりの行数が多い母集団（大井のような
+    # 1場のみのNARは1日十数頭×十数レースで先頭100行を埋めやすい）では、先頭
+    # 100行が全て `None` になり polars が列の型を誤って確定させ、後続の実数値
+    # で `ComputeError` になる（JRAは同日に複数場が並行開催されるため先頭100行
+    # に実数値が混ざりやすく、これまで顕在化していなかった）。`stat_sql` は
+    # 必ず単一の数値スカラーかNULLを返す契約（本関数のdocstring）のため、
+    # `Float64` 固定で安全
+    return pl.DataFrame(
+        rows, schema={"race_id": pl.Int64, "horse_id": pl.Int64, "stat": pl.Float64},
+        orient="row",
+    )
