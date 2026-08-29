@@ -79,6 +79,35 @@ def list_race_keys(page: RawPage) -> list[str]:
     return list(seen.keys())
 
 
+def list_nar_race_keys(page: RawPage, course_filter: str) -> list[str]:
+    """`<h3>地方</h3>` セクションから、`course_filter` に一致する会場のレースIDを
+    列挙する（`Q-047` 段階②、`D-176`）。
+
+    NAR側のday_indexは中央側（`list_race_keys`）と異なるHTML構造を持ち
+    （`<dt class="race_top_hold_data"><p>会場名</p>` で会場ブロックが区切られる、
+    `race_top_hold_data` に相当する要素が中央側には無い）、正規表現を共有できない
+    ため別関数にした。段階①（`data/nar_stage1_sample.py`）のスタンドアロン実装を
+    そのまま踏襲する。
+    """
+    text = decode_best(page.body, page.encoding if page.encoding != "unknown" else None)
+    text = _STRIP_RE.sub(" ", text)
+
+    m_start = re.search(r"<h3>\s*地方\s*</h3>", text)
+    if not m_start:
+        return []
+    m_next = re.search(r"<h3>", text[m_start.end():])
+    end = m_start.end() + (m_next.start() if m_next else len(text) - m_start.end())
+    segment = text[m_start.end():end]
+
+    ids: list[str] = []
+    for course_block in re.split(r'(?=<dt class="race_top_hold_data">)', segment):
+        cm = re.search(r'<dt class="race_top_hold_data">\s*<p>\s*([^<]+?)\s*</p>', course_block)
+        if not cm or cm.group(1).strip() != course_filter:
+            continue
+        ids.extend(re.findall(r'/race/(\d{12})/"', course_block))
+    return ids
+
+
 # ---------------------------------------------------------------------------
 # archive: レースヘッダ
 # ---------------------------------------------------------------------------
@@ -87,6 +116,12 @@ _GRADE_MAP = {
     "GI": "G1", "GII": "G2", "GIII": "G3",
     "JpnI": "Jpn1", "JpnII": "Jpn2", "JpnIII": "Jpn3",
     "L": "L",
+    # 「重賞」は地方競馬（NAR）の見出しで確認した（`Q-047` 段階②）。全国指定
+    # （JpnI〜III）を持たない地方限定の重賞がこの表記になる（例:
+    # 「第68回羽田盃競走(重賞)」——羽田盃自体は全国交流のある重賞だが見出しは
+    # JpnI表記ではなくこちらだった）。JRAの見出しにこの表記は現れないため
+    # JRA側の解析結果に影響しない
+    "重賞": "重賞",
 }
 
 
@@ -105,9 +140,10 @@ def _parse_header(text: str, race_id: int) -> dict:
     race_number = int(rn_m.group(1)) if rn_m else None
 
     h1_m = re.search(r"<h1>(.*?)</h1>", block, re.S)
+    title = html.unescape(re.sub(r"<.*?>", "", h1_m.group(1))).strip() if h1_m else ""
     grade = None
     if h1_m:
-        g_m = re.search(r"\((GI{1,3}|JpnI{1,3}|L)\)", h1_m.group(1))
+        g_m = re.search(r"\((GI{1,3}|JpnI{1,3}|L|重賞)\)", h1_m.group(1))
         if g_m:
             grade = _GRADE_MAP.get(g_m.group(1), g_m.group(1))
 
@@ -158,7 +194,26 @@ def _parse_header(text: str, race_id: int) -> dict:
     smalltxt = (re.sub(r"\s+", " ",
                        html.unescape(re.sub(r"<.*?>", "", smalltxt_m.group(1))).replace("\xa0", " "))
                 .strip() if smalltxt_m else "")
-    race_class, weight_rule, meeting_no, meeting_day, class_unparsed = _parse_smalltxt(smalltxt)
+    race_class, weight_rule, meeting_no, meeting_day, meeting_course, class_unparsed = \
+        _parse_smalltxt(smalltxt)
+
+    # `Q-047` 段階②（`D-176`）: `course` の一次情報源（`class="active"` リンク）は
+    # NARページでは会場名ではなくレース番号タブ（"7R" 等）を拾ってしまう
+    # （実測、大井のアーカイブページで確認）。妥当な会場名に見えない場合だけ、
+    # smalltxt の開催表記から取れた会場名で置き換える。JRAは常に active リンクが
+    # 成功するため、この分岐はJRAの既存結果を変えない
+    if not course or re.match(r"^\d+R$", course):
+        course = meeting_course
+
+    # `Q-047` 段階②（`D-176`）: 大井のクラス表記はJRAの語彙（`_RACE_CLASSES`）に
+    # 一つも一致しないため、JRA解析が失敗した場合に限りNAR用の解析を試みる。
+    # `course == "大井"` に絞るのは、他場の見出し書式を未確認のまま流用しないため
+    # （段階③で他場に広げる際に検証してから対象を増やす）
+    if class_unparsed and course == "大井":
+        nar_class = _parse_nar_race_class(title)
+        if nar_class is not None:
+            race_class = nar_class
+            class_unparsed = False
 
     return {
         "course": course, "race_number": race_number, "grade": grade,
@@ -176,20 +231,62 @@ def _parse_header(text: str, race_id: int) -> dict:
 # 保存済み3,606ページで下記の語彙に閉じることを確認した（2026-08-17）。
 _RACE_CLASSES = ("新馬", "未勝利", "1勝クラス", "2勝クラス", "3勝クラス", "オープン")
 _WEIGHT_RULES = ("馬齢", "定量", "別定", "ハンデ")
-_MEETING_RE = re.compile(r"(\d+)回\D+?(\d+)日目")
+# `Q-047` 段階②: 「n回<会場名>m日目」の会場名を第2群として捕捉する。JRA・NAR
+# 共通の書式（`D-176`）。当初は会場名を捕捉していなかったが、`course` の一次情報源
+# （`class="active"` リンク）がNARページでは別の値（レース番号タブ）を拾ってしまう
+# ため、こちらをフォールバックに使う
+_MEETING_RE = re.compile(r"(\d+)回(\D+?)(\d+)日目")
+
+# `Q-047` 段階②: 大井の見出しクラス表記（`D-176`）。JRAの「1勝クラス」等とは
+# 全く別の体系——A1/A2/B1/B2/B3/C1/C2/C3のクラスラダーで、隣接クラスの併合が
+# ある（例: B1B2, C1C2）。実見出し172件（大井2023年4-6月）で確認した2パターン:
+#   括弧内にクラス表記がある: "ヘルメス賞(C1)" "南風賞競走(B1B2)" "さつき賞競走(A2)"
+#     （括弧内に組番号が続くこともある: "(C2三)" → 有効なクラスは先頭の "C2"）
+#   括弧が無く見出し先頭にクラス表記がある: "C3五　六" "B3四"
+# 3歳馬の収得賞金帯レース（例: "3歳　164万"）はクラス文字を持たず、この関数では
+# 拾わない——生の賞金帯テキストを race_class に流用すると年ごとに閾値が動き
+# 事実上ユニークな値になってしまい（`F-304` の class_key を汚す）、それよりは
+# 素直に未解析（`None`）として扱う方が安全と判断した
+_NAR_CLASS_RE = re.compile(r"[ABC][1-3](?:[ABC][1-3])?")
 
 
-def _parse_smalltxt(s: str) -> tuple[str | None, str | None, int | None, int | None, bool]:
-    """smalltxt から (race_class, weight_rule, meeting_no, meeting_day, 解釈失敗) を返す。"""
+def _parse_nar_race_class(title: str) -> str | None:
+    """大井の見出し（`title`）からクラス表記を抜く。見つからなければ `None`
+    （`D-049` と同じ寛容な失敗——レースは棄てず `class_unparsed` として記録する
+    のみで、取り込み自体は止めない）。"""
+    paren_m = re.search(r"\(([^)]*)\)\s*$", title)
+    if paren_m:
+        m = _NAR_CLASS_RE.match(paren_m.group(1))
+        if m:
+            return m.group(0)
+    m = _NAR_CLASS_RE.match(title)
+    if m:
+        return m.group(0)
+    if "新馬" in title:
+        return "新馬"
+    if "オープン" in title:
+        return "オープン"
+    return None
+
+
+def _parse_smalltxt(
+    s: str,
+) -> tuple[str | None, str | None, int | None, int | None, str | None, bool]:
+    """smalltxt から (race_class, weight_rule, meeting_no, meeting_day,
+    meeting_course, 解釈失敗) を返す。`meeting_course` は `course` のフォールバック
+    に使う会場名（`D-176`）。"""
     if not s:
-        return None, None, None, None, False
+        return None, None, None, None, None, False
 
     parts = s.split()
     meeting_no = meeting_day = None
+    meeting_course = None
     if len(parts) >= 2:
         m = _MEETING_RE.match(parts[1])
         if m:
-            meeting_no, meeting_day = int(m.group(1)), int(m.group(2))
+            meeting_no = int(m.group(1))
+            meeting_course = m.group(2)
+            meeting_day = int(m.group(3))
 
     # 条件部（第3トークン以降）。年齢条件が前置されるので部分一致で探す
     cond = " ".join(parts[2:])
@@ -198,7 +295,7 @@ def _parse_smalltxt(s: str) -> tuple[str | None, str | None, int | None, int | N
 
     # 条件部があるのにクラスが取れない場合だけ失敗として扱う
     class_unparsed = bool(cond) and race_class is None
-    return race_class, weight_rule, meeting_no, meeting_day, class_unparsed
+    return race_class, weight_rule, meeting_no, meeting_day, meeting_course, class_unparsed
 
 
 # ---------------------------------------------------------------------------
@@ -563,6 +660,44 @@ class NetkeibaJraSource:
         if page.page_kind != "archive":
             raise NotImplementedError(
                 f"page_kind={page.page_kind} のパースは P-0 の対象外（shutuba は未実装）"
+            )
+        return parse_archive(page)
+
+
+class NetkeibaNarSource:
+    """`Source` プロトコルの地方競馬（NAR）版実装（`Q-047` 段階②、`D-176`）。
+
+    `parse()` は `NetkeibaJraSource` と共通（`parse_archive` をそのまま使う）。
+    馬・騎手・調教師・馬主のID空間はJRA・NARで共有されている（同じ
+    `db.netkeiba.com` の `/horse/{id}/` 等）ため、`name` も `SOURCE`
+    （`"netkeiba_jra"`）を流用する——両者を交錯する馬・騎手のエンティティ解決を
+    一致させるため。呼称と実態が食い違うが、`source_ids` テーブルの `source` は
+    「データ提供元」を表す列であり「開催団体」ではないため、この流用は設計上
+    正しい（`D-176`）。開催団体はレース自身の `course`（会場名）で判別する。
+
+    段階②は大井1場に限定するため、`course_filter` はコンストラクタ引数として
+    明示的に渡す（既定値を持たせない——対象場を無言で広げないため）。
+    """
+
+    name = SOURCE
+
+    def __init__(self, fetcher: Fetcher, course_filter: str) -> None:
+        self._fetcher = fetcher
+        self._course_filter = course_filter
+
+    def list_race_keys(self, day) -> list[str]:
+        key = day.strftime("%Y%m%d")
+        page = self._fetcher.get(url_for(key, "day_index"), source=self.name,
+                                 page_kind="day_index", source_key=key)
+        return list_nar_race_keys(page, self._course_filter)
+
+    def url_for(self, source_key: str, page_kind: PageKind) -> str:
+        return url_for(source_key, page_kind)
+
+    def parse(self, page: RawPage) -> ParsedRace:
+        if page.page_kind != "archive":
+            raise NotImplementedError(
+                f"page_kind={page.page_kind} のパースは段階②の対象外（shutuba は未実装）"
             )
         return parse_archive(page)
 

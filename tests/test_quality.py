@@ -156,6 +156,17 @@ def test_payout_horses_ignores_wakuren(conn):
     assert report.fail_counts["payout_horses"] == 0
 
 
+def test_payout_horses_ignores_wakutan(conn):
+    """枠単（`Q-047` 段階②で発見したNAR固有券種、`D-176`）も枠連と同じく
+    combination が枠番であり馬番と照合しないため検出されない。"""
+    _clean_race(conn, n=4)
+    conn.execute(
+        "INSERT INTO payouts VALUES (1, '枠単', '9-9', [9, 9], 100, 1, 'netkeiba_jra', ?)", [NOW],
+    )
+    report = run_quality_checks(conn)
+    assert report.fail_counts["payout_horses"] == 0
+
+
 def test_odds_monotonic_detects_reversal(conn):
     _race(conn, 1, 2, 2)
     _runner(conn, 1, 1, 1, finish_pos=1, time_sec=100.0, odds_win=12.3, popularity=1)

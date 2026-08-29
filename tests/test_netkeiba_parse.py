@@ -403,6 +403,115 @@ def test_unknown_race_class_recorded_but_race_kept():
     assert any(r.reason == "unknown_race_class" for r in pr.rejected)
 
 
+# --- Q-047 段階②: NAR（大井）の会場名・クラス表記（D-176） -----------------
+
+def test_nar_course_fallback_when_active_link_is_race_number():
+    """`class=\"active\"` リンクがレース番号（\"7R\"）を拾うNAR実機の不具合
+    パターンを、smalltxtの開催表記からの会場名で補う。"""
+    html = build_archive_html(race_id=1, date_y=2023, date_m=5, date_d=22,
+                              course="大井", active_link_text="7R",
+                              smalltxt_cond="(別定)",
+                              corner_nos=[1, 2, 3, 4],
+                              runners=[_runner(passage="1-1-1-1")])
+    r = parse_archive(_page(html)).race
+    assert r["course"] == "大井"
+
+
+def test_jra_course_unaffected_when_active_link_looks_valid():
+    """active リンクが会場名らしい値のときは、smalltxt と食い違っても
+    active リンク側（一次情報源）を優先する——JRAの既存挙動を変えない。"""
+    html = build_archive_html(race_id=1, date_y=2023, date_m=5, date_d=22,
+                              course="東京", active_link_text="スギノコースA",
+                              corner_nos=[1, 2, 3, 4],
+                              runners=[_runner(passage="1-1-1-1")])
+    r = parse_archive(_page(html)).race
+    assert r["course"] == "スギノコースA"
+
+
+def test_grade_juusho_parsed():
+    """「(重賞)」は地方限定重賞の見出し表記（JpnI〜IIIを持たない）。"""
+    html = build_archive_html(race_id=1, date_y=2023, date_m=6, date_d=7,
+                              course="大井", title="第69回東京ダービー競走(重賞)",
+                              smalltxt_cond="(別定)",
+                              corner_nos=[1, 2, 3, 4],
+                              runners=[_runner(passage="1-1-1-1")])
+    r = parse_archive(_page(html)).race
+    assert r["grade"] == "重賞"
+    assert r["race_class"] is None   # 重賞は級別を持たない（JRAのG1と同じ扱い）
+
+
+@pytest.mark.parametrize("title,expect_class", [
+    ("ヘルメス賞(C1)", "C1"),
+    ("南風賞競走(B1B2)", "B1B2"),
+    ("カイピリーニャ賞(C2三)", "C2"),           # 括弧内の組番号は無視してクラスだけ採る
+    ("C3五　六", "C3"),                      # 括弧無し・見出し先頭のクラス表記
+    ("2歳　新馬", "新馬"),
+    ("ゆりかもめオープン競(4上)", "オープン"),
+])
+def test_nar_race_class_parsed_for_oi(title, expect_class):
+    html = build_archive_html(race_id=1, date_y=2023, date_m=5, date_d=1,
+                              course="大井", title=title, smalltxt_cond="(別定)",
+                              corner_nos=[1, 2, 3, 4],
+                              runners=[_runner(passage="1-1-1-1")])
+    r = parse_archive(_page(html)).race
+    assert r["race_class"] == expect_class
+
+
+def test_nar_race_class_unparsed_for_prize_bracket_race():
+    """収得賞金帯レース（クラス文字を持たない）は素直に未解析のまま扱う——
+    生の賞金帯テキストを race_class に流用すると年ごとに実質ユニークな値に
+    なり F-304 の class_key を汚すため、あえて拾わない設計（`D-176`）。"""
+    html = build_archive_html(race_id=1, date_y=2023, date_m=5, date_d=1,
+                              course="大井", title="3歳　164万",
+                              smalltxt_cond="93万円以上164万円未満 (別定)",
+                              corner_nos=[1, 2, 3, 4],
+                              runners=[_runner(passage="1-1-1-1")])
+    pr = parse_archive(_page(html))
+    assert pr.race["race_class"] is None
+    assert any(r.reason == "unknown_race_class" for r in pr.rejected)
+
+
+def test_nar_race_class_parsing_scoped_to_oi_only():
+    """`course` が大井以外なら、見出しがNAR風でもNAR用の解析を試みない
+    （段階②はまだ大井以外の見出し書式を検証していないため）。"""
+    html = build_archive_html(race_id=1, date_y=2023, date_m=5, date_d=1,
+                              course="東京", title="ヘルメス賞(C1)",
+                              smalltxt_cond="(別定)",
+                              corner_nos=[1, 2, 3, 4],
+                              runners=[_runner(passage="1-1-1-1")])
+    r = parse_archive(_page(html)).race
+    assert r["race_class"] is None
+
+
+def _nar_hold_block(course_name: str, race_ids: list[str]) -> str:
+    links = "".join(f'<a href="/race/{rid}/">{rid}</a>' for rid in race_ids)
+    return f'<dt class="race_top_hold_data"><p>{course_name}</p></dt><dd>{links}</dd>'
+
+
+def test_list_nar_race_keys_filters_by_course():
+    from umagic.sources.netkeiba import list_nar_race_keys
+
+    body = (
+        '<html><head><meta charset="utf-8"></head><body>'
+        '<h3>中央</h3><div>'
+        + _day_index_entry("202305021201", "3歳未勝利", "ダ1600m")
+        + "</div>"
+        '<h3>地方</h3>'
+        + _nar_hold_block("大井", ["202344052207", "202344052211"])
+        + _nar_hold_block("川崎", ["202345052301"])
+        + "</body></html>"
+    ).encode("utf-8")
+    keys = list_nar_race_keys(_page(body, page_kind="day_index"), "大井")
+    assert keys == ["202344052207", "202344052211"]
+
+
+def test_list_nar_race_keys_no_local_section():
+    from umagic.sources.netkeiba import list_nar_race_keys
+
+    body = "<html><body>no races today</body></html>".encode("utf-8")
+    assert list_nar_race_keys(_page(body, page_kind="day_index"), "大井") == []
+
+
 # --- D-050: 血統 -------------------------------------------------------------
 
 def _ped_html(pairs):

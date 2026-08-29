@@ -124,3 +124,26 @@ def test_owner_resolved_and_written(conn):
     ingest_race(conn, fetcher2, source2, "9")
     n_owners = conn.execute("SELECT COUNT(*) FROM owners").fetchone()[0]
     assert n_owners == 1
+
+
+def test_nar_race_class_writes_through_widened_check(conn):
+    """`Q-047` 段階②（`D-176`）: 大井のクラス値（例 `C1`）が `races.race_class`
+    の CHECK 制約を通ってDBに書ける——widen 漏れがあればここで
+    ConstraintException になる。"""
+    html = build_archive_html(
+        race_id=10, date_y=2023, date_m=5, date_d=22,
+        course="大井", active_link_text="7R", title="ヘルメス賞(C1)",
+        smalltxt_cond="(別定)", surface="ダート", direction="右",
+        corner_nos=[1, 2, 3, 4],
+        runners=[{"finish": "1", "number": 1, "name": "馬A", "passage": "1-1-1-1",
+                  "horse_key": "1000000010"}],
+    )
+    fetcher = _FixedFetcher(html)
+    source = NetkeibaJraSource(fetcher)
+    out = ingest_race(conn, fetcher, source, "10")
+    assert out.outcome == "ok"
+
+    row = conn.execute(
+        "SELECT course, race_class FROM races WHERE race_id = 10"
+    ).fetchone()
+    assert row == ("大井", "C1")

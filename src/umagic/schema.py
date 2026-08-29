@@ -101,7 +101,14 @@ DDL_STATEMENTS: list[str] = [
         CHECK (track_condition IS NULL
                OR track_condition IN ('良', '稍重', '重', '不良')),
         CHECK (race_class IS NULL OR race_class IN
-               ('新馬', '未勝利', '1勝クラス', '2勝クラス', '3勝クラス', 'オープン')),
+               ('新馬', '未勝利', '1勝クラス', '2勝クラス', '3勝クラス', 'オープン',
+                -- 大井（NAR）のクラスラダー。`Q-047` 段階②・`D-176`。JRAとは別体系
+                -- のため両者が同じ値を取ることは無い（衝突しない）。ラダーは
+                -- A1>A2>B1>B2>B3>C1>C2>C3の順で、隣接クラスの併合表記がある
+                -- （文字をまたぐ併合も実在する。例: A2B1。実データ299レースで
+                -- 確認済み）。ラダー上で隣接する全7組を許可する
+                'A1', 'A2', 'B1', 'B2', 'B3', 'C1', 'C2', 'C3',
+                'A1A2', 'A2B1', 'B1B2', 'B2B3', 'B3C1', 'C1C2', 'C2C3')),
         CHECK (weight_rule IS NULL OR weight_rule IN ('馬齢', '定量', '別定', 'ハンデ')),
         CHECK (meeting_no IS NULL OR meeting_no >= 1),
         CHECK (meeting_day IS NULL OR meeting_day >= 1)

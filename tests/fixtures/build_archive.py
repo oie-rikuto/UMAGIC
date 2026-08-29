@@ -10,7 +10,7 @@ from __future__ import annotations
 RACE_HEADER_TMPL = """
 <div class="race_head"><div class="race_head_inner">
 <ul class="race_place fc">
-<li><a href="/race/{race_id}/" class="active">{course}</a></li>
+<li><a href="/race/{race_id}/" class="active">{active_link_text}</a></li>
 </ul>
 </div></div>
 <div class="mainrace_data fc"><div class="data_intro">
@@ -73,6 +73,10 @@ def build_archive_html(
     race_id: int,
     date_y: int, date_m: int, date_d: int,
     course: str = "東京", race_number: int = 11, title: str = "テストレース",
+    # `class="active"` リンクの表示テキスト。既定は `course` と同じ（JRAの実挙動）。
+    # NARページの再現（`Q-047` 段階②）ではレース番号タブが拾われる不具合を
+    # 模すため "7R" 等を明示的に渡す
+    active_link_text: str | None = None,
     surface: str = "芝", direction: str = "左", distance: int = 2000,
     course_shape: str = "",   # 「 外」「 外-内」など。実ページの表記を再現する
     meeting_no: int = 1, meeting_day: int = 1,
@@ -92,7 +96,9 @@ def build_archive_html(
     dist_token = f"{surface_text}{direction or ''}{course_shape}{distance}m"
 
     header = RACE_HEADER_TMPL.format(
-        race_id=race_id, course=course, race_number=race_number, title=title,
+        race_id=race_id, course=course,
+        active_link_text=active_link_text if active_link_text is not None else course,
+        race_number=race_number, title=title,
         dist_token=dist_token, weather=weather,
         meeting_no=meeting_no, meeting_day=meeting_day, smalltxt_cond=smalltxt_cond,
         surface_label=surface_label, track_condition=track_condition,

@@ -150,12 +150,21 @@ def test_unwritable_race_does_not_abort_range(conn):
     """ヘッダを読めず制約違反になるレースがあっても全体は止まらず、次へ進む。
 
     `_parse_header` は `/race/{source_key}/` の active リンクから course を取る。
-    HTML 内の race_id がずれていると course が NULL になり `NOT NULL` 違反する。
+    HTML 内の race_id がずれていると、一次情報源（active リンク）からは course
+    が取れない。`Q-047` 段階②（`D-176`）で smalltxt の開催表記からのフォール
+    バックを足したため、smalltxt 自体も壊す（`course=""` だと smalltxt の
+    「n回m日目」に会場名が挟まらず `_MEETING_RE` も一致しなくなる）ことで
+    両方の経路を落とし、course が NULL のまま `NOT NULL` 違反させる。
     実ページでもレイアウト変更で同じことが起きうる。
     """
     d1, d2 = date(2023, 5, 27), date(2023, 5, 28)
-    # 1日目は source_key と HTML 内 race_id が食い違う壊れたページ
-    broken = _html(999999999999, 27)
+    # 1日目は source_key と HTML 内 race_id が食い違い、かつ course が空の壊れたページ
+    broken = build_archive_html(
+        race_id=999999999999, date_y=2023, date_m=5, date_d=27,
+        race_number=999999999999 % 12 + 1, course="",
+        corner_nos=[1, 2, 3, 4],
+        runners=[{"finish": "1", "number": 1, "passage": "1-1-1-1", "time": "1:08.0"}],
+    )
     good = _html(202305021211, 28)
 
     class _PerKeyFetcher(_StubFetcher):

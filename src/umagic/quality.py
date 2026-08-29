@@ -64,12 +64,14 @@ FAIL_CHECKS: dict[str, str] = {
         FROM runners
         WHERE status NOT IN ('出走','降着','競走中止','失格','出走取消','競走除外')
     """,
-    # R-014: 払戻の整合
+    # R-014: 払戻の整合。`枠連`/`枠単` は枠番（1〜8）の組み合わせで馬番では
+    # ないため対象外（`枠単` は地方競馬（NAR）のみの券種、`Q-047` 段階②で
+    # 実測して判明——`D-176`）
     "payout_horses": """
         SELECT p.race_id, NULL AS horse_id,
                p.bet_type || ' ' || p.comb_key || ' 馬番' || n AS detail
         FROM payouts p, UNNEST(p.combination) AS t(n)
-        WHERE p.bet_type <> '枠連'
+        WHERE p.bet_type NOT IN ('枠連', '枠単')
           AND NOT EXISTS (
               SELECT 1 FROM runners ru
               WHERE ru.race_id = p.race_id AND ru.number = n
