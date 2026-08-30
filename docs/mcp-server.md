@@ -42,9 +42,10 @@ claude mcp add umagic -- /Users/oierikuto/Desktop/UMAGIC/.venv/bin/python \
   /Users/oierikuto/Desktop/UMAGIC/scripts/mcp_server.py
 ```
 
-登録後は `claude mcp list` で確認できる。以降のセッションで自動的に
-`umagic` サーバーのツールが使えるようになる。外すときは
-`claude mcp remove umagic`。
+登録後は `claude mcp list` で確認できる。**登録した瞬間には稼働中の
+セッションのツール一覧には反映されない**（`D-185`で実測確認）——
+**新しいセッションを起動して初めて**`umagic`サーバーのツールが使える
+ようになる。外すときは `claude mcp remove umagic`。
 
 ### Claude Desktop から接続する
 
@@ -63,11 +64,12 @@ claude mcp add umagic -- /Users/oierikuto/Desktop/UMAGIC/.venv/bin/python \
 
 保存後、Claude Desktop を再起動すると認識される。
 
-**この2つの接続手順自体は未検証**（サーバー側の各ツールの動作は個別に
-確認済み——`scripts/mcp_server.py` の各関数を直接呼んで検証した。MCP
-プロトコル経由の接続テストはまだ行っていない）。接続できない場合は
-まず `python scripts/mcp_server.py` を直接実行してエラーが出ないか確認
-すること。
+**Claude Code CLI からの接続は`D-185`で実地検証済み**（`claude mcp add`
+→ `✔ Connected`、および`mcp`パッケージのクライアントSDKで
+`initialize`→`tools/list`→`tools/call`の実際のプロトコル往復を確認、
+`data/mcp_client_test.py`）。**Claude Desktopからの接続は未検証。**
+接続できない場合はまず `python scripts/mcp_server.py` を直接実行して
+エラーが出ないか確認すること。
 
 ## 依存
 

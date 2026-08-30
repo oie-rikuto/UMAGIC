@@ -4325,3 +4325,18 @@ fold 0 で有意に届かなかった（−0.0024、CI [−0.0048, +0.0001]）�
 **テスト**: `tests/test_inference_realdata.py`（`D-053`と同じ規律で`realdata`マーク）に2件追加——重複拒否と正常系（本番DBに無い`race_id`で正しく重ね合わせられる）。全463件通過。
 
 **影響**: `predict_race`（`scripts/predict_race.py`・MCPサーバーの`predict_race`ツール）は、対象レースが既に過去になっていた場合に「7時間ハングしたように見える」のではなく「即座に明確なエラーを返す」ようになった。実測（20秒）により、`D-183`が見込んでいた「数十秒〜数分」という速度目標は達成できることが確認できた。9/6の重賞での実運用に向けて、この安全策は重要な前提になる——本番DBの最新化と対象レースの選定を並行して進める運用では、この種の重複が繰り返し起こりうるため。
+
+## D-185 MCPプロトコル経由の実地接続を検証した
+
+**状態**: Accepted
+
+**決定**: `Q-048`の残タスクだった「`scripts/mcp_server.py`の各関数は個別に動作確認済みだが、MCPプロトコル経由の実際の接続は未検証」を解消した。2段階で検証した。
+
+1. **`claude mcp add umagic -- .venv/bin/python scripts/mcp_server.py`**（Claude Code CLI）で登録し、`claude mcp list`/`claude mcp get umagic`で`✔ Connected`を確認した——サーバープロセスが実際に起動しMCPハンドシェイクに応答することの検証
+2. **`mcp`パッケージのクライアントSDK**（`ClientSession`/`stdio_client`）でサーバーをsubprocessとして直接起動し、`initialize`→`tools/list`→`tools/call`という実際のJSON-RPCプロトコルを叩いた（`data/mcp_client_test.py`）。`tools/list`で5ツール全てが正しく列挙され、`lookup_doc("D-119")`・`search_docs("推論キャッシュ")`（`D-183`が正しくヒット）・`list_source_files`が期待どおりの結果を返した
+
+**`predict_race`ツール自体は今回呼んでいない**（本番DBが皐月賞held-out検証で読み取り中だったため）。ただし`predict_race`は`D-181`〜`D-184`で関数単体としては既に動作確認済みであり、今回はMCPプロトコルの「配線」（サーバー起動・ハンドシェイク・ツール列挙・呼び出しのJSON往復）を検証する目的で、DBを触らない4ツールに絞った。
+
+**Claude Code CLIから接続する場合の注意点を1つ記録する。** `claude mcp add`で登録したMCPサーバーは、**登録した瞬間には稼働中のセッションのツール一覧に反映されない**（`ToolSearch`で探しても見つからなかった）——新しいセッションの起動時にのみ読み込まれる。`docs/mcp-server.md`に追記した。
+
+**影響**: `Q-048`のMCP接続に関する未検証項目は解消した。`docs/mcp-server.md`の手順が実際に機能することを実証した。
