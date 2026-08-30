@@ -17,6 +17,7 @@ JRA平地G1に限定した競馬予想モデルの設計ドキュメント群。
 | [`open-questions.md`](./open-questions.md) | 未決事項と、決めるために必要な情報 | 次に判断する人 |
 | [`spec/`](./spec/) | **実装仕様書（今後追加）** | 実装する人 |
 | [`tasks.md`](./tasks.md) | 実作業と完了条件（`P-0`〜`P-3`） | 手を動かす人 |
+| [`mcp-server.md`](./mcp-server.md) | UMAGICをLLMエージェント（Claude）に接続する手順（`Q-048`/`D-182`） | 実際に使ってみる人 |
 
 `design.md` は作らない（`D-019`）。設計は `architecture.md`（全体）と `spec/`（モジュール単位）が担う。
 
