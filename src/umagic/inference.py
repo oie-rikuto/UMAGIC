@@ -69,6 +69,21 @@ def build_overlay(conn: duckdb.DuckDBPyConnection, shutuba: ParsedShutuba) -> in
     r = shutuba.race
     fetched_at = datetime.now(timezone.utc)
 
+    # `D-184`: 対象レースが既に本番DBに実在すると（本番DBが対象レース日を
+    # 追い越して最新化された場合に起こりうる）、UNION ALLビューで
+    # race_id が重複し、`join_asof` 等の下流結合が異常な実行計画になる
+    # （実測: 特徴量計算が数時間かかった。原因はこの重複だった）。
+    # 静かに壊れたデータを返すのではなく、ここで明示的に検出して拒否する
+    existing = conn.execute(
+        "SELECT COUNT(*) FROM prod.races WHERE race_id = ?", [r["race_id"]],
+    ).fetchone()[0]
+    if existing:
+        raise ValueError(
+            f"race_id={r['race_id']} は既に本番DB（{PROD_DB_PATH}）に存在します"
+            "（対象レース日を本番DBの取り込みが追い越した可能性があります）。"
+            "build_overlay はまだ結果の無いレース専用のため、この重ね合わせは行いません。"
+        )
+
     horse_ids, _ = _resolve_entities(conn, "horse", [e["horse_source_key"] for e in shutuba.entries])
     jockey_ids, _ = _resolve_entities(
         conn, "jockey", [e["jockey_source_key"] for e in shutuba.entries if e["jockey_source_key"]],
