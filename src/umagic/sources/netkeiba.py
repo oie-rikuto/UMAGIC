@@ -15,7 +15,7 @@ import html
 import re
 from datetime import date, datetime, timezone
 
-from umagic.sources.base import Fetcher, PageKind, ParsedRace, RawPage, RejectedRow
+from umagic.sources.base import Fetcher, PageKind, ParsedRace, ParsedShutuba, RawPage, RejectedRow
 from umagic.sources.encoding import decode_best
 
 SOURCE = "netkeiba_jra"
@@ -743,3 +743,178 @@ def parse_pedigree(page: RawPage) -> dict:
 
     return {"horse_source_key": page.source_key, "sire_key": sire_key,
             "dam_key": dam_key, "damsire_key": damsire_key}
+
+
+# ---------------------------------------------------------------------------
+# shutuba: 発走前の出馬表（推論パイプライン専用、`Q-048` 運用予測パス）
+# ---------------------------------------------------------------------------
+#
+# `race.netkeiba.com` の `shutuba.html` は `db.netkeiba.com` の `archive`
+# ページと**別サブドメイン・別テンプレート**（`RaceList_Item0*`/`RaceData0*`/
+# `Shutuba_Table` の class 体系）で、archive 用の正規表現を流用できない。
+# 実ページ（2026年皐月賞、既に確定済みのレースで検証——発走前のページは
+# 発走後もURLがそのまま残り閲覧できることを確認した上で流用した）で
+# 目視・regex照合して確認した（2026-08-30）。
+#
+# **オッズ・人気は静的HTMLに含まれない**（JavaScriptによる非同期更新の
+# プレースホルダ "---.-" / "**" のみ）。対象レースのオッズを特徴量にしない
+# （`D-002`）本プロジェクトの用途には元々不要なため、取得しない。
+
+_GRADE_ICON_MAP = {"1": "G1", "2": "G2", "3": "G3"}
+
+
+def _parse_shutuba_header(text: str, race_id: int) -> dict:
+    # `_STRIP_RE`（呼び出し元）がHTMLコメントを除去済みのため、閉じ位置は
+    # コメント（`<!-- /.RaceList_Item02 -->`）ではなく次の兄弟要素の開始
+    # タグで判定する
+    desc_m = re.search(r'<meta name="description" content="([^"]+)"', text)
+    # 実測（2026年皐月賞）は月日をゼロ埋めしない表記（archiveページの
+    # smalltxtとは書式が違う）
+    date_m = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日", desc_m.group(1)) if desc_m else None
+    race_date = date(int(date_m.group(1)), int(date_m.group(2)), int(date_m.group(3))) \
+        if date_m else None
+
+    block_m = re.search(
+        r'<div class="RaceList_Item02">(.*?)<div class="RaceList_Item03">', text, re.S,
+    )
+    block = block_m.group(1) if block_m else ""
+
+    rn_m = re.search(r'<span class="RaceNum">.*?(\d{1,2})\s*R\s*</span>', text, re.S)
+    race_number = int(rn_m.group(1)) if rn_m else None
+
+    title_m = re.search(r'<h1 class="RaceName">\s*(.*?)\s*<span', block, re.S)
+    title = html.unescape(title_m.group(1)).strip() if title_m else ""
+
+    grade = None
+    g_m = re.search(r"Icon_GradeType(\d+)", block)
+    if g_m:
+        grade = _GRADE_ICON_MAP.get(g_m.group(1))
+
+    data01_m = re.search(r'<div class="RaceData01">(.*?)</div>', block, re.S)
+    surface = direction = distance = weather = track_condition = post_time = None
+    if data01_m:
+        info = html.unescape(re.sub(r"<.*?>", " ", data01_m.group(1)))
+        info = re.sub(r"\s+", " ", info).strip()
+        pt_m = re.search(r"(\d{1,2}:\d{2})\s*発走", info)
+        if pt_m:
+            post_time = pt_m.group(1)
+        sd_m = re.search(r"(芝|ダ)\s*(\d+)m\s*\(\s*(右|左|直線)?", info)
+        if sd_m:
+            surface = {"芝": "芝", "ダ": "ダート"}[sd_m.group(1)]
+            distance = int(sd_m.group(2))
+            direction = sd_m.group(3)
+        w_m = re.search(r"天候\s*[:：]\s*(\S+)", info)
+        if w_m:
+            weather = w_m.group(1)
+        tc_m = re.search(r"馬場\s*[:：]\s*(\S+)", info)
+        if tc_m:
+            # shutubaページは馬場状態を1文字に略す（archiveページは「稍重」
+            # 「不良」とフル表記、`001-schema.md` の CHECK もフル表記を要求
+            # するため展開する）。実測（2024年11月、東京・福島）で確認
+            track_condition = {"良": "良", "稍": "稍重", "重": "重", "不": "不良"}.get(tc_m.group(1))
+
+    data02_m = re.search(r'<div class="RaceData02">(.*?)</div>', block, re.S)
+    meeting_no = meeting_day = None
+    race_class = weight_rule = None
+    n_entries = None
+    if data02_m:
+        spans = [html.unescape(re.sub(r"<.*?>", "", s)).strip()
+                 for s in re.findall(r"<span>(.*?)</span>", data02_m.group(1), re.S)]
+        spans = [s for s in spans if s]
+        mo_m = re.search(r"(\d+)回", spans[0]) if len(spans) > 0 else None
+        meeting_no = int(mo_m.group(1)) if mo_m else None
+        md_m = re.search(r"(\d+)日目", spans[2]) if len(spans) > 2 else None
+        meeting_day = int(md_m.group(1)) if md_m else None
+        race_class = next((c for c in _RACE_CLASSES if any(c in s for s in spans)), None)
+        weight_rule = next((w for w in _WEIGHT_RULES if any(w in s for s in spans)), None)
+        ne_m = re.search(r"(\d+)頭", " ".join(spans))
+        n_entries = int(ne_m.group(1)) if ne_m else None
+
+    course_m = re.search(r">(\S+?)\s*払戻一覧</a>", text)
+    course = course_m.group(1) if course_m else None
+
+    return {
+        "date": race_date, "course": course, "race_number": race_number, "title": title,
+        "grade": grade, "surface": surface, "direction": direction, "distance": distance,
+        "weather": weather, "track_condition": track_condition, "post_time": post_time,
+        "race_class": race_class, "weight_rule": weight_rule,
+        "meeting_no": meeting_no, "meeting_day": meeting_day, "n_entries": n_entries,
+    }
+
+
+def _parse_shutuba_entries(text: str) -> list[dict]:
+    tbl_m = re.search(r'<table class="Shutuba_Table[^"]*"', text)
+    if not tbl_m:
+        return []
+    close_m = text.index("</table>", tbl_m.start())
+    segment = text[tbl_m.start():close_m]
+
+    rows = re.findall(r'<tr class="HorseList"[^>]*>(.*?)</tr>', segment, re.S)
+    entries: list[dict] = []
+    for row in rows:
+        num_m = re.search(r'Umaban\d+[^>]*>\s*(\d+)\s*<', row)
+        if not num_m:
+            continue  # Shutuba_Table 内の他表記（レイアウト補助行）はここで弾く
+        number = int(num_m.group(1))
+        waku_m = re.search(r'"Waku\d+[^>]*>\s*<span>\s*(\d+)\s*</span>', row)
+        frame = int(waku_m.group(1)) if waku_m else None
+
+        horse_m = re.search(r'<span class="HorseName"><a href="[^"]*?/horse/(\w+)"[^>]*>([^<]+)', row)
+        horse_key = horse_m.group(1) if horse_m else None
+        horse_name = html.unescape(horse_m.group(2)).strip() if horse_m else None
+
+        sa_m = re.search(r'"Barei Txt_C">\s*(\S+?)\s*</td>', row)
+        sex_age = sa_m.group(1) if sa_m else ""
+        sex = sex_age[0] if sex_age else None
+        age = int(sex_age[1:]) if len(sex_age) > 1 and sex_age[1:].isdigit() else None
+
+        wc_m = re.search(r'<td class="Txt_C">\s*(\d+\.\d)\s*</td>', row)
+        weight_carried = float(wc_m.group(1)) if wc_m else None
+
+        jockey_m = re.search(r'/jockey/result/recent/(\w+)/"[^>]*>\s*([^<]*?)\s*</a>', row)
+        jockey_key = jockey_m.group(1) if jockey_m else None
+        jockey_name = html.unescape(jockey_m.group(2)).strip() if jockey_m else None
+
+        trainer_m = re.search(
+            r'<td class="Trainer"><span class="Label\d">(\S+?)</span>'
+            r'<a href="[^"]*?/trainer/result/recent/(\w+)/"[^>]*>\s*([^<]*?)\s*</a>', row,
+        )
+        affiliation = trainer_key = trainer_name = None
+        if trainer_m:
+            affiliation = {"美浦": "東", "栗東": "西"}.get(trainer_m.group(1))
+            trainer_key = trainer_m.group(2)
+            trainer_name = html.unescape(trainer_m.group(3)).strip()
+
+        hw_m = re.search(r'<td class="Weight">\s*(\d+)<small>\(([+-]?\d+)\)</small>', row)
+        horse_weight = int(hw_m.group(1)) if hw_m else None
+        weight_diff = int(hw_m.group(2)) if hw_m else None
+
+        entries.append({
+            "number": number, "frame": frame,
+            "horse_source_key": horse_key, "horse_name": horse_name,
+            "sex": sex, "age": age, "weight_carried": weight_carried,
+            "jockey_source_key": jockey_key, "jockey_name": jockey_name,
+            "trainer_source_key": trainer_key, "trainer_name": trainer_name,
+            "affiliation": affiliation,
+            "horse_weight": horse_weight, "weight_diff": weight_diff,
+        })
+    return entries
+
+
+def parse_shutuba(page: RawPage) -> ParsedShutuba:
+    """`shutuba` ページ（発走前の出馬表）を `ParsedShutuba` に変換する。
+
+    `parse_archive()` とはページ構造が全く別（`race.netkeiba.com` の別
+    テンプレート）のため独立して実装する。結果・払戻・オッズは含まれない
+    （発走前のため存在しない）。推論パイプライン専用で、本番の
+    `ingest_race()`（`ParsedRace` 前提）には接続しない。
+    """
+    race_id = int(page.source_key)
+    text = decode_best(page.body, page.encoding if page.encoding != "unknown" else None)
+    text = _STRIP_RE.sub(" ", text)
+
+    header = _parse_shutuba_header(text, race_id)
+    entries = _parse_shutuba_entries(text)
+
+    race = {"race_id": race_id, **header}
+    return ParsedShutuba(race=race, entries=entries)

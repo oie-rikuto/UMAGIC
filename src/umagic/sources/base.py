@@ -44,6 +44,16 @@ class ParsedRace:
     rejected: list[RejectedRow] = field(default_factory=list)   # R-013
 
 
+@dataclass(frozen=True)
+class ParsedShutuba:
+    """発走前の出馬表（`shutuba`）のパース結果。`ParsedRace` とは意図的に
+    別型にする——結果・払戻・オッズ・ラップを持たない（まだ発走していない
+    ため存在しない）。本番の `ingest_race()`（`ParsedRace` 前提）とは
+    別経路（推論パイプライン専用）で使う。"""
+    race: dict                          # 開催情報（結果に依存する列は持たない）
+    entries: list[dict] = field(default_factory=list)   # 出走予定馬（着順・オッズ無し）
+
+
 class Fetcher(Protocol):
     """取得の責務。レート制限・キャッシュ・robots.txt 確認を担う。"""
 
