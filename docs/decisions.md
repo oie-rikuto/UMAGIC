@@ -4282,3 +4282,26 @@ fold 0 で有意に届かなかった（−0.0024、CI [−0.0048, +0.0001]）�
 **追記（同日）**: ユーザーからの追加確認（「実装や仕様等の情報は与えることができるのか」）を受け、当初の`lookup_decision`/`search_decisions`（`decisions.md`限定）を`lookup_doc`/`search_docs`（D/Q/R/F4体系横断）に一般化し、`list_source_files`/`read_source`を追加した。これによりLLMエージェントは「なぜ」（決定の根拠）・「何を」（要件・特徴量カタログ）・「どう作るか」（仕様書・実装本体）の全てにアクセスできる。
 
 **影響**: `Q-048` の技術的な前提（出馬表パーサー・運用推論パス）が揃い、MCPサーバーとして実際に外部エージェントから呼べる状態になった。ただし**市場に対する優位という核心の問題（`D-119`〜`D-180`）は未解決のまま**——MCPサーバー自体はこれを解決しない。本番DBの最新化が完了次第、皐月賞での再検証と9月6日の重賞での初回の実運用を行う。
+
+## D-183 `predict_race` が全履歴を毎回再計算していたため実用時間で終わらなかった。原因はメモリスワップ、対策として推論キャッシュを実装した
+
+**状態**: Accepted
+
+**決定**: `D-182`で動作確認した`predict_race`を、本番DB最新化後（2026年4月まで、11年3ヶ月分）のデータで皐月賞2026に対して再実行したところ、**4時間経過しても完了しなかった。** ユーザーの許可を得てプロセスを終了させ、原因を切り分けた上で**推論キャッシュ機構を新規実装した。**
+
+**原因の切り分け（プロセスを終了させずに調査した）**: macOS標準の`sample`コマンド（`sudo`不要）でプロセスを覗いたところ、DuckDBの`PhysicalHashJoin`（結合処理）の中で実際に計算を続けていた——ハングではなかった。物理メモリ使用量は**8.7GB（ピーク14.1GB）だったのに対し、実行マシンの物理RAMは8GB**しかなく、`vm.swapusage`で**9.64GB/11.26GBのスワップ使用**を確認した。前回（本番DB更新前、10年分データ）は43分で完了していたのに対し、データ量は13%しか増えていないのに実行時間が5倍以上に伸びていた理由は、**物理メモリを超えてスワップが発生する「相転移」**で説明できる（ユーザーが他アプリを閉じるとスワップ使用量が半減し、CPU使用率も改善した——実測で確認）。
+
+**根本原因**: `Stage2FoldRunner.predict_fold()`は呼ぶたびに`assemble_stage2_matrix(conn, train_ids + valid_ids, ...)`を呼んでおり、**過去の確定済みレース（全履歴）の特徴量を対象レース1件を追加するだけで毎回ゼロから計算し直していた。** 各特徴量は対象行ごとに独立したas-of集計（`D-051`）で、同じバッチに他の行が何件あるかに依存しない設計のため、この再計算は本質的に不要だった。
+
+**対策: 推論キャッシュ（`src/umagic/production_model.py`）**:
+
+- `build_production_cache()`/`build_production_cache_from_conn()`: 本番DB全履歴でStage1・Stage2を1回だけ学習し、`data/prediction_cache/`に保存する（`scripts/build_prediction_cache.py`、本番DB更新時に再実行する運用）
+- `predict_with_cache()`: キャッシュ済みモデルを読み込み、**対象レース1件だけ**特徴量計算（`assemble_stage2_matrix(conn, [race_id], ...)`）して予測する
+- `LightGBMStage1Model`には既に`save()`/`load()`（`@classmethod`）が存在した（`stage1.py`、未使用のまま埋まっていた）。これを使ってStage1モデルも保存・復元する
+- `scripts/predict_race.py`・`scripts/mcp_server.py`の`predict_race`ツールをキャッシュ利用に切り替えた。キャッシュが無い場合は明示的にエラーを返し、`build_prediction_cache.py`の実行を促す
+
+**実装中に見つけたバグ（自分のミス）**: `Edit`で`load_stage1_model()`を挿入した際、**既存の`LightGBMStage1Model.load()`（`@classmethod`）の直前に誤って挿入し、クラスメソッドを新しいトップレベル関数の`return`文の後に続くネストした（到達不能な）関数定義にしてしまった。** `py_compile`は構文的に正当なため通過したが、既存のテスト（`tests/test_stage1_model.py::test_save_and_load_round_trip_preserves_extra_meta`）が`AttributeError: type object 'LightGBMStage1Model' has no attribute 'load'`で失敗して発覚した。**この既存テストが無ければ、動くはずの`.load()`が壊れたまま気づかなかった可能性がある。** 修正し、新規関数は削除して既存の`.load()`をそのまま使う設計に直した。
+
+**テスト**: `tests/test_orchestration.py::test_production_cache_build_and_predict_smoke`（合成DBでキャッシュ構築→予測が例外なく通り、`win_prob`がレース単位で1.0に正規化されることを確認）。全452件通過。
+
+**影響**: 個々の予測は「対象レース1件だけの特徴量計算」に縮小され、数十秒〜数分程度で終わる見込み（未計測——本番DBでの実地検証は別途行う）。本番DBを更新するたびに`build_prediction_cache.py`の再実行が必要になる（未更新のキャッシュで予測すると、直近のデータが反映されない。`predict_race.py`/MCPツールは古いキャッシュを検出して警告を出す）。

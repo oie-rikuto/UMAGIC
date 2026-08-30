@@ -6,10 +6,10 @@
 `D-181`で揃った。ここではその上にツールを載せる。
 
     predict_race      まだ発走していないレースの勝率を予測する
-                       （`src/umagic/inference.py` をそのまま使う。
-                       学習に本番と同じ設定を使うため、実行に数十分
-                       かかる——MCPツールとして遅いことを呼び出し側に
-                       明示する）
+                       （`src/umagic/inference.py` + 推論キャッシュ
+                       `D-183`。対象レース1件だけ特徴量計算する高速経路。
+                       キャッシュが無い場合は先に
+                       `scripts/build_prediction_cache.py` を実行すること）
     lookup_doc        `D-xxx`/`Q-xxx`/`R-xxx`/`F-xxx` の全文を1件返す
                        （それぞれ `decisions.md`/`open-questions.md`/
                        `requirements.md`/`domain-knowledge.md`）
@@ -30,9 +30,10 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -43,12 +44,12 @@ from mcp.server.mcpserver import MCPServer
 
 from umagic.cache import LocalCacheFetcher
 from umagic.inference import build_overlay
-from umagic.orchestration import Stage2FoldRunner
+from umagic.production_model import CACHE_META_FILENAME, predict_with_cache
 from umagic.sources.netkeiba import parse_shutuba
-from umagic.training import Fold
 
 ROOT = Path(__file__).parent.parent
 UA = "UMAGIC-dev/0.1 (personal research; contact: repository owner)"
+PREDICTION_CACHE_DIR = ROOT / "data" / "prediction_cache"
 
 # ID接頭辞 → (ファイル, 見出しレベル)。`docs-writing.md` のID体系どおり
 # （decisions.md/open-questions.md は `## D-xxx`、requirements.md は
@@ -81,16 +82,22 @@ def predict_race(race_id: str) -> dict:
 
     `race_id` は12桁の netkeiba レースID（例: "202606030811"）。出馬表
     （発走の数日前から公開）を取得・パースし、`data/umagic.duckdb`
-    （書き換えない）に対象レースを重ね合わせて、本番と同じ設定
-    （`Stage2FoldRunner`、Plackett-Luce top-3、`D-113`の正則化）で
-    全履歴を学習してから予測する。
+    （書き換えない）に対象レースを重ね合わせて、事前に作った推論キャッシュ
+    （`scripts/build_prediction_cache.py`、`D-183`）で予測する——対象
+    レース1件だけ特徴量計算する高速経路（本番DB全履歴の再学習はしない）。
 
-    **実行に数十分かかる**（全履歴の特徴量再計算とLightGBM学習のため）。
-    呼び出し側はタイムアウトを長めに取ること。
+    **キャッシュが無い場合はエラーを返す。** 先に
+    `uv run python scripts/build_prediction_cache.py` を実行すること
+    （本番DBを更新した後も再実行が必要）。
 
     戻り値の `win_prob` は市場（単勝オッズ）に対する優位が未実証の値
     （`D-119`〜`D-180`）——賭けの根拠にはしないこと。
     """
+    meta_path = PREDICTION_CACHE_DIR / CACHE_META_FILENAME
+    if not meta_path.exists():
+        return {"error": f"推論キャッシュがありません: {meta_path}。"
+                          "先に scripts/build_prediction_cache.py を実行してください。"}
+
     fetcher = LocalCacheFetcher(cache_dir=ROOT / "data" / "cache", user_agent=UA, min_interval=5.0)
     url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
     page = fetcher.get(url, source="netkeiba_jra", page_kind="shutuba", source_key=race_id)
@@ -101,18 +108,13 @@ def predict_race(race_id: str) -> dict:
 
     conn = duckdb.connect(":memory:")
     rid = build_overlay(conn, shutuba)
-
     target_date = shutuba.race["date"]
-    min_date, max_data_date = conn.execute(
-        "SELECT MIN(date), MAX(date) FROM races WHERE race_id != ?", [rid],
-    ).fetchone()
-    train_end = min(target_date - timedelta(days=1), max_data_date)
-    gap_days = (target_date - max_data_date).days if max_data_date < target_date - timedelta(days=1) else 0
 
-    fold = Fold(index=0, train_start=min_date, train_end=train_end,
-                valid_start=target_date, valid_end=target_date, seed=42)
-    runner = Stage2FoldRunner(today=date.today(), sealed_years=0)
-    out = runner.predict_fold(conn, fold)
+    cache_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    trained_through = date.fromisoformat(cache_meta["trained_through"])
+    gap_days = max(0, (target_date - trained_through).days - 1)
+
+    out = predict_with_cache(conn, rid, target_date, PREDICTION_CACHE_DIR)
 
     numbers = conn.execute("SELECT horse_id, number FROM runners WHERE race_id = ?", [rid]).pl()
     entry_names = pl.DataFrame([
@@ -121,8 +123,7 @@ def predict_race(race_id: str) -> dict:
     result = (
         out.join(numbers, on="horse_id", how="inner")
         .join(entry_names, on="number", how="left")
-        .select(["number", "horse_name", "y_pred"])
-        .rename({"y_pred": "win_prob"})
+        .select(["number", "horse_name", "win_prob"])
         .sort("win_prob", descending=True)
     )
     conn.close()

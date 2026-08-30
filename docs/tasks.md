@@ -834,11 +834,21 @@
       完了（2026-08-30）: `src/umagic/inference.py`（`build_overlay()`）+ `scripts/predict_race.py`。皐月賞2026（本番DBに存在しないレース）で動作確認、18頭の予測勝率が合計1.0000に正規化された
       実装過程で2バグ発見・修正: (1) `inner_valid`が空になりLightGBMが落ちる（本番DB終端と対象レース日の空白期間が原因）、(2) 対象レース自身が封印されて除外される（`today`に対象レース日を誤って渡していた）
 - [x] JRA本番DBの最新化に着手する（`D-182`）
-      着手中（2026-08-30）: `scripts/ingest_range.py --from 2025-01-01 --to 2026-08-30` をバックグラウンドで実行中（推定8時間超）。事前に`data/umagic.duckdb.bak-20260830-pre-2025ingest`へバックアップ済み
-      完了後: 皐月賞直前までのデータで皐月賞を再予測する検証を行う
+      一部完了（2026-08-30）: `scripts/ingest_range.py --from 2025-01-01 --to 2026-08-30` を実行し、2026年4月末（皐月賞の直後）まで到達したところでユーザーの指示により停止した（効率重視、9/6直前に再開する想定）。事前に`data/umagic.duckdb.bak-20260830-pre-2025ingest`へバックアップ済み
 - [x] UMAGICをMCP経由でLLMエージェントに接続する（`Q-048`、`D-182`）
-      完了（2026-08-30）: ユーザーが着手条件を明示的に一時解除。`scripts/mcp_server.py`（`predict_race`・`lookup_decision`・`search_decisions`）。`mcp`パッケージを依存に追加（`uv add mcp`）
+      完了（2026-08-30）: ユーザーが着手条件を明示的に一時解除。`scripts/mcp_server.py`（`predict_race`・`lookup_doc`・`search_docs`・`list_source_files`・`read_source`）。`mcp`パッケージを依存に追加（`uv add mcp`）
       市場優位という核心問題（`D-119`〜`D-180`）はMCPサーバー自体では解決しない。`predict_race`の戻り値に留保を毎回含める設計
+- [x] 推論キャッシュを実装する（`D-183`）
+      完了（2026-08-30）: 本番DB最新化後（11年3ヶ月分）の`predict_race`再実行が4時間経過しても終わらず（原因: 物理RAM8GBを超えるメモリスワップ）、`src/umagic/production_model.py`にキャッシュ機構を実装した。全履歴のStage1・Stage2モデルを`scripts/build_prediction_cache.py`で1回だけ学習・保存し、以降の予測は対象レース1件だけ特徴量計算する
+      `predict_race.py`・MCPサーバーの`predict_race`ツールともキャッシュ利用に切り替えた。テスト追加、全452件通過。本番DBでの実地検証は別途行う
+- [ ] 本番DBでキャッシュ構築→皐月賞2026の再予測を実地検証する
+      キャッシュ構築（`scripts/build_prediction_cache.py`）を実行中。完了後、速度と予測結果を確認する
+- [ ] JRA本番DBの最新化を再開する（9/6直前）
+      2026年4月末で止めた取り込みを、9/6の重賞に向けて再開する（`scripts/ingest_range.py --from 2025-01-01 --to 2026-08-30` を再実行すればresumeで続きから進む）
+- [ ] 対象3レース（産経賞セントウルS・紫苑S・京成杯オータムH）の`race_id`を特定する
+      9/6のday_indexページが見えるようになってから拾う
+- [ ] MCPプロトコル経由の実地接続テスト
+      `scripts/mcp_server.py`の各関数は個別に動作確認済みだが、`claude mcp add`等での実際の接続はまだ未検証
 
 ## オッズを特徴量にする経路（`D-171`〜`D-173`。`D-002` の一時的な例外）
 

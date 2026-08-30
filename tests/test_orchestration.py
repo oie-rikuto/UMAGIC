@@ -298,3 +298,39 @@ def test_run_p3_completion_check_smoke(orch_conn):
     assert result.g1_n_races > 0
     assert result.all_model_logloss == result.all_model_logloss  # NaN でない
     assert result.g1_model_logloss == result.g1_model_logloss
+
+
+def test_production_cache_build_and_predict_smoke(orch_conn, tmp_path):
+    """観点7（スモークテスト）: `D-183`の推論キャッシュが例外なく作れて、
+    キャッシュ済みモデルで（対象レース1件だけ特徴量計算して）予測できる。
+
+    真の未来レースではなく既存レースの1件をそのまま対象に使う——
+    `predict_with_cache()` の呼び出し経路（Stage1予測→対象1件だけの
+    特徴量計算→カテゴリ変換→予測）が壊れていないかのスモークテストで、
+    リーク安全性や精度は検証しない（それは`D-054`のリークテスト・
+    walk-forward検証の役割）。
+    """
+    from umagic.production_model import build_production_cache_from_conn, predict_with_cache
+
+    runner = Stage2FoldRunner(
+        today=date(2026, 1, 1), n_blocks=2, min_category_count=2,
+        num_boost_round=10, early_stopping_rounds=3,
+    )
+    cache_dir = tmp_path / "prediction_cache"
+    meta = build_production_cache_from_conn(orch_conn, cache_dir, runner=runner)
+    assert meta["n_train_races"] > 0
+    assert (cache_dir / "stage1").exists()
+    assert (cache_dir / "stage2").exists()
+    assert (cache_dir / "category_mappings.json").exists()
+
+    target = orch_conn.execute(
+        "SELECT race_id, date FROM races ORDER BY race_id DESC LIMIT 1"
+    ).fetchone()
+    race_id, race_date = target
+
+    out = predict_with_cache(orch_conn, race_id, race_date, cache_dir)
+    assert set(out.columns) == {"race_id", "horse_id", "win_prob"}
+    assert out.height > 0
+    assert out["win_prob"].min() > 0.0
+    assert out["win_prob"].max() < 1.0
+    assert abs(out["win_prob"].sum() - 1.0) < 1e-6
