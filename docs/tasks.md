@@ -849,6 +849,10 @@
       再開後はキャッシュ（`scripts/build_prediction_cache.py`）も作り直すこと
 - [ ] 対象3レース（産経賞セントウルS・紫苑S・京成杯オータムH）の`race_id`を特定する
       2026-09-06のday_indexはまだ0件（2026-08-31時点で確認済み）。出馬表公開と同じタイミングか、その前後で拾う
+- [x] 皐月賞2026を直前まで（4/18まで）のデータで学習して予測する（`D-186`）
+      完了（2026-08-31）: 皐月賞は本番DBに実在するレースになった（`D-184`）ため`build_overlay()`は使わず、`Stage2FoldRunner.predict_fold()`に`train_end=2026-04-18`のFoldを渡す方法（`data/predict_satsuki_heldout.py`）で実施。所要38.2分
+      実際の勝ち馬（市場1番人気）はモデルで4位（10.5%、LogLoss 2.26、市場は1.62）——市場には届かなかったが、stale版（`D-182`、LogLoss 2.94）からは改善。単一レースのため統計的結論は出せない
+      `D-017`の封印を明示的にバイパスした。`D-182`での確認も含め皐月賞2026の実際の結果を見たのは2回目（`D-186`で訂正・記録）
 - [x] MCPプロトコル経由の実地接続テスト（`D-185`）
       完了（2026-08-31）: `claude mcp add`で`✔ Connected`確認。`mcp`パッケージのクライアントSDKで`initialize`→`tools/list`→`tools/call`の実際のプロトコル往復を確認（`data/mcp_client_test.py`）。5ツール全て列挙、`lookup_doc`/`search_docs`/`list_source_files`が正しい結果を返した（`predict_race`は本番DBが他検証で使用中のため未実施）
 - [ ] （優先度低・検討のみ、未着手）推論キャッシュを差分更新にする
