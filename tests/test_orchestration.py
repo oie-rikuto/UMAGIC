@@ -334,3 +334,57 @@ def test_production_cache_build_and_predict_smoke(orch_conn, tmp_path):
     assert out["win_prob"].min() > 0.0
     assert out["win_prob"].max() < 1.0
     assert abs(out["win_prob"].sum() - 1.0) < 1e-6
+
+
+def test_explain_with_cache_returns_family_level_contributions(orch_conn, tmp_path):
+    """`D-192`: 予測の内訳が `F-xxx` 単位で返り、同じ馬の内訳が
+    `top_k` 件に収まる。寄与の絶対値が降順に並ぶことも確認する。
+    """
+    from umagic.production_model import (
+        build_production_cache_from_conn,
+        explain_with_cache,
+        feature_family,
+    )
+
+    runner = Stage2FoldRunner(
+        today=date(2026, 1, 1), n_blocks=2, min_category_count=2,
+        num_boost_round=10, early_stopping_rounds=3,
+    )
+    cache_dir = tmp_path / "prediction_cache"
+    build_production_cache_from_conn(orch_conn, cache_dir, runner=runner)
+
+    race_id, race_date = orch_conn.execute(
+        "SELECT race_id, date FROM races ORDER BY race_id DESC LIMIT 1"
+    ).fetchone()
+
+    out = explain_with_cache(orch_conn, race_id, race_date, cache_dir, top_k=3)
+    assert set(out.columns) == {"race_id", "horse_id", "family", "label", "contribution"}
+    assert out.height > 0
+
+    # 馬ごとに top_k 件以内で、絶対値降順に並ぶ
+    for _, grp in out.group_by("horse_id"):
+        assert grp.height <= 3
+        magnitudes = [abs(v) for v in grp["contribution"].to_list()]
+        assert magnitudes == sorted(magnitudes, reverse=True)
+
+    # 全ての family が `F-xxx` 形式か "その他"
+    for fam in out["family"].unique().to_list():
+        assert fam == "その他" or (fam.startswith("F-") and fam[2:].isdigit())
+
+
+def test_feature_family_maps_known_column_shapes():
+    """`D-192`: 列名 → `F-xxx` の対応。接頭辞で機械的に決まらない
+    3系統（生ID・`last3f_*`・`fspd_*`）を明示的に確認する。
+    """
+    from umagic.production_model import feature_family
+
+    assert feature_family("f809_win_rate_z") == "F-809"
+    assert feature_family("f501_unavailable") == "F-501"
+    assert feature_family("f102") == "F-102"
+    # 接頭辞から機械的に決まらないもの
+    assert feature_family("sire_id") == "F-201"
+    assert feature_family("jockey_id") == "F-201"
+    assert feature_family("last3f_all_rank") == "F-303"
+    assert feature_family("fspd_best") == "F-304"
+    # 未知の形式
+    assert feature_family("something_else") == "その他"

@@ -200,3 +200,91 @@ def predict_with_cache(
     verify_feature_order(meta, _feature_columns(x))
     pred = predict_win_prob(booster, x.select(feature_cols), x["race_id"], x["horse_id"])
     return pred.select(["race_id", "horse_id", "win_prob"])
+
+
+# ---------------------------------------------------------------------------
+# 予測の内訳（`D-192`）
+# ---------------------------------------------------------------------------
+#
+# 特徴量名 → `F-xxx`（`docs/domain-knowledge.md`）の対応。`assemble_stage2_matrix`
+# が作る169列は、1つの `F-xxx` が複数列（生値・`_z`・`_rank`・`_unavailable`）に
+# 展開されたものなので、内訳を人間に見せるときは `F-xxx` 単位に畳む。
+#
+# 接頭辞で機械的に決まらないものだけを明示する（`last3f_*`→`F-303`、
+# `fspd_*`→`F-304`、生ID4列→`F-201`）。残りは `fNNN` の数字がそのまま
+# `F-NNN` を指す。
+_EXPLICIT_FEATURE_FAMILY = {
+    "sire_id": "F-201", "damsire_id": "F-201",
+    "jockey_id": "F-201", "trainer_id": "F-201",
+}
+
+FEATURE_FAMILY_LABELS = {
+    "F-101": "逃げ意欲スコア", "F-102": "想定ペース指標（Stage 1の出力）",
+    "F-103": "ペース適性", "F-104": "展開交互作用",
+    "F-201": "血統・騎手・厩舎のID（生カテゴリ）", "F-202": "種牡馬の条件別成績",
+    "F-302": "補正タイムベースの能力値（既定無効・D-110）",
+    "F-303": "上がり3F関連", "F-304": "中央値ベースの速度指数",
+    "F-501": "当日の脚質バイアス", "F-503": "開催週次・柵移動",
+    "F-601": "反動リスク（前走の着差・上がり順位）", "F-602": "ローテーション",
+    "F-603": "馬体重", "F-701": "騎手の実力（人気帯で交絡除去）",
+    "F-702": "乗り替わり", "F-703": "厩舎の勝負度", "F-704": "騎手のコース適性",
+    "F-801": "枠順バイアス", "F-802": "コース・距離適性",
+    "F-803": "レース基礎情報", "F-804": "当日の天候・馬場状態",
+    "F-805": "出走馬の基礎情報（年齢・性別・斤量）", "F-806": "相手強度",
+    "F-807": "前走からの条件替わり", "F-809": "馬のキャリア成績率",
+}
+
+
+def feature_family(column: str) -> str:
+    """特徴量列名を `F-xxx` に対応づける。未知の形式は `"その他"` を返す。"""
+    if column in _EXPLICIT_FEATURE_FAMILY:
+        return _EXPLICIT_FEATURE_FAMILY[column]
+    if column.startswith("last3f_"):
+        return "F-303"
+    if column.startswith("fspd_"):
+        return "F-304"
+    if len(column) >= 4 and column[0] == "f" and column[1:4].isdigit():
+        return f"F-{column[1:4]}"
+    return "その他"
+
+
+def explain_with_cache(
+    conn: duckdb.DuckDBPyConnection, race_id: int, target_date: date, cache_dir: Path,
+    *, top_k: int = 6,
+) -> pl.DataFrame:
+    """`predict_with_cache()` と同じ入力で、各馬のスコアの内訳を返す。
+
+    LightGBM の `pred_contrib=True`（SHAP値）を使い、169列の寄与を
+    `F-xxx` 単位に合計してから、絶対値の大きい順に `top_k` 件を返す。
+    寄与はスコア（softmax前の生margin）のスケールで、**レース内の相対
+    比較にのみ意味がある**（`predict_win_prob` が `_softmax_by_race` で
+    レース単位に正規化するため、絶対値そのものは確率に直接対応しない）。
+
+    戻り値: `race_id, horse_id, family, label, contribution`（`contribution`
+    降順ではなく、馬ごとに絶対値降順で `top_k` 件）。
+    """
+    stage1_model, _ = LightGBMStage1Model.load(cache_dir / STAGE1_SUBDIR)
+    booster, meta = load_model(cache_dir / STAGE2_SUBDIR)
+    mappings = _load_category_mappings(cache_dir / CATEGORY_MAP_FILENAME)
+    feature_cols = meta["feature_names"]
+
+    f102 = predict_f102(stage1_model, conn, [race_id], as_of=target_date)
+    x = assemble_stage2_matrix(conn, [race_id], as_of=target_date, f102=f102, horse_effects=None)
+    x = apply_category_mappings(x, mappings)
+    verify_feature_order(meta, _feature_columns(x))
+
+    # (n_rows, n_features + 1)。末尾はベース値（全体平均）で、内訳からは外す
+    contrib = booster.predict(x.select(feature_cols).to_numpy(), pred_contrib=True)
+
+    rows = []
+    for i, horse_id in enumerate(x["horse_id"].to_list()):
+        by_family: dict[str, float] = {}
+        for j, col in enumerate(feature_cols):
+            fam = feature_family(col)
+            by_family[fam] = by_family.get(fam, 0.0) + float(contrib[i][j])
+        for fam, value in sorted(by_family.items(), key=lambda kv: -abs(kv[1]))[:top_k]:
+            rows.append({
+                "race_id": race_id, "horse_id": horse_id, "family": fam,
+                "label": FEATURE_FAMILY_LABELS.get(fam, fam), "contribution": value,
+            })
+    return pl.DataFrame(rows)

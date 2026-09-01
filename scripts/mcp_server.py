@@ -10,6 +10,11 @@
                        `D-183`。対象レース1件だけ特徴量計算する高速経路。
                        キャッシュが無い場合は先に
                        `scripts/build_prediction_cache.py` を実行すること）
+    explain_race      同じレースの**スコアの内訳**を`F-xxx`単位で返す
+                       （`D-192`。SHAP値。モデルが「なぜ」その評価をした
+                       かを、人手で計算できない量に分解して見せる）
+    query_history     本番DB（38,000レース超）に読み取り専用SQLを投げる
+                       （`D-192`。過去の傾向を自由に問い合わせる）
     lookup_doc        `D-xxx`/`Q-xxx`/`R-xxx`/`F-xxx` の全文を1件返す
                        （それぞれ `decisions.md`/`open-questions.md`/
                        `requirements.md`/`domain-knowledge.md`）
@@ -44,7 +49,11 @@ from mcp.server.mcpserver import MCPServer
 
 from umagic.cache import LocalCacheFetcher
 from umagic.inference import build_overlay
-from umagic.production_model import CACHE_META_FILENAME, predict_with_cache
+from umagic.production_model import (
+    CACHE_META_FILENAME,
+    explain_with_cache,
+    predict_with_cache,
+)
 from umagic.sources.netkeiba import parse_shutuba
 
 ROOT = Path(__file__).parent.parent
@@ -107,7 +116,13 @@ def predict_race(race_id: str) -> dict:
         return {"error": "出馬表が取得できませんでした（未公開、またはページ構造の想定外）"}
 
     conn = duckdb.connect(":memory:")
-    rid = build_overlay(conn, shutuba)
+    try:
+        rid = build_overlay(conn, shutuba)
+    except ValueError as e:  # D-184 の重複ガード。生の例外にせず理由を返す
+        conn.close()
+        return {"error": str(e),
+                "hint": "既に結果が確定しているレースです。過去レースの成績は "
+                        "query_history で引けます。"}
     target_date = shutuba.race["date"]
 
     cache_meta = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -140,6 +155,143 @@ def predict_race(race_id: str) -> dict:
             for r in result.iter_rows(named=True)
         ],
         "caveat": "市場（単勝オッズ）に対する優位は未実証（D-119〜D-180）。賭けの根拠にしないこと。",
+    }
+
+
+@server.tool()
+def explain_race(race_id: str, top_k: int = 6) -> dict:
+    """`predict_race` と同じレースについて、**各馬のスコアの内訳**を返す
+    （`D-192`）。
+
+    LightGBMのSHAP値を169の特徴量列ごとに求め、`F-xxx`（`domain-knowledge.md`
+    の特徴量カタログ）単位に合計して、寄与の大きい順に `top_k` 件返す。
+    「モデルがなぜこの馬を高く（低く）評価したか」を、人手では計算できない
+    量（`F-304` 速度指数・`F-809` キャリア成績率・`F-701` 人気帯で交絡除去
+    した騎手の実力など）に分解して見せるためのツール。
+
+    **`contribution` はスコア（softmax前の生margin）のスケールで、
+    レース内の相対比較にのみ意味がある。** 確率そのものへの寄与ではない。
+
+    使い方: `predict_race` で全体像を掴み、市場と乖離した馬について
+    `explain_race` で理由を見て、その理由が外部情報（追い切り・馬体重・
+    当日の馬場等）と整合するかを検証する——という順で使う。
+    """
+    meta_path = PREDICTION_CACHE_DIR / CACHE_META_FILENAME
+    if not meta_path.exists():
+        return {"error": f"推論キャッシュがありません: {meta_path}。"
+                          "先に scripts/build_prediction_cache.py を実行してください。"}
+
+    fetcher = LocalCacheFetcher(cache_dir=ROOT / "data" / "cache", user_agent=UA, min_interval=5.0)
+    url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
+    page = fetcher.get(url, source="netkeiba_jra", page_kind="shutuba", source_key=race_id)
+    shutuba = parse_shutuba(page)
+    if not shutuba.entries:
+        return {"error": "出馬表が取得できませんでした（未公開、またはページ構造の想定外）"}
+
+    conn = duckdb.connect(":memory:")
+    try:
+        try:
+            rid = build_overlay(conn, shutuba)
+        except ValueError as e:  # D-184 の重複ガード。生の例外にせず理由を返す
+            return {"error": str(e),
+                    "hint": "既に結果が確定しているレースです。過去レースの成績は "
+                            "query_history で引けます。"}
+        target_date = shutuba.race["date"]
+        contrib = explain_with_cache(conn, rid, target_date, PREDICTION_CACHE_DIR, top_k=top_k)
+        numbers = conn.execute(
+            "SELECT horse_id, number FROM runners WHERE race_id = ?", [rid],
+        ).pl()
+    finally:
+        conn.close()
+
+    names = pl.DataFrame([
+        {"number": e["number"], "horse_name": e["horse_name"]} for e in shutuba.entries
+    ])
+    joined = (contrib.join(numbers, on="horse_id", how="inner")
+                     .join(names, on="number", how="left"))
+
+    by_horse: dict[int, dict] = {}
+    for r in joined.iter_rows(named=True):
+        entry = by_horse.setdefault(
+            r["number"], {"number": r["number"], "horse_name": r["horse_name"], "drivers": []},
+        )
+        entry["drivers"].append({
+            "feature": r["family"], "label": r["label"],
+            "contribution": round(r["contribution"], 4),
+        })
+
+    return {
+        "race": {"title": shutuba.race["title"], "date": str(shutuba.race["date"])},
+        "horses": [by_horse[k] for k in sorted(by_horse)],
+        "note": "contribution はスコア（softmax前）のスケール。レース内の相対比較にのみ意味がある。"
+                "特徴量の定義は lookup_doc('F-xxx') で引ける。",
+        "caveat": "市場に対する優位は未実証（D-119〜D-190）。内訳が説得的でも賭けの根拠にしないこと。",
+    }
+
+
+@server.tool()
+def query_history(sql: str, max_rows: int = 200) -> dict:
+    """本番DB（`data/umagic.duckdb`、38,000レース超・54万出走行）に
+    **読み取り専用**のSQLを投げる（`D-192`）。
+
+    `SELECT` / `WITH` で始まるクエリのみ受け付ける。接続自体が
+    `read_only=True` なので書き込みは物理的にできない（`D-176`/`D-182`
+    と同じ設計）。結果は `max_rows` 件で打ち切る。
+
+    主なテーブル:
+      races    race_id, date, course, race_number, distance, surface,
+               direction, grade, track_condition, weather, n_starters,
+               race_class, prize, corner_nos
+      runners  race_id, horse_id, number, frame, jockey_id, trainer_id,
+               weight_carried, horse_weight, weight_diff, age, sex,
+               odds_win, popularity, status, finish_pos, margin,
+               time_sec, last_3f, corners, owner_id
+      horses / jockeys / trainers / owners   各エンティティのマスタ
+      payouts  race_id, bet_type, comb_key, combination, payout, popularity
+      odds     race_id, bet_type, comb_key, odds_low, odds_high, as_of
+      laps     レースのラップタイム
+
+    **`runners.status` の値は日本語**: `'出走'`（通常。大半がこれ）・
+    `'出走取消'`・`'競走除外'`・`'競走中止'`・`'失格'`・`'降着'`。
+    成績を集計するときは `status NOT IN ('出走取消','競走除外')` で
+    絞るのが既定（`D-073`。この2つは馬券の対象外で確率の正規化にも
+    含めない）。**`status='ran'` のような英語の値は存在しない。**
+
+    `races.surface` は `'芝'`/`'ダート'`、`races.grade` は `NULL`
+    （無格付。大半がこれ）・`'G1'`/`'G2'`/`'G3'`・`'L'`（リステッド）。
+    `races.course` は `'中山'`/`'東京'` 等の日本語の競馬場名。
+
+    **列の値が期待と違うときは、まず `SELECT DISTINCT <列> FROM <表>`
+    で実際の値を確認すること**（結果が0件のときの原因の大半がこれ）。
+
+    **このDBは結果が確定した過去レースのみを持つ。** 予測対象の未来の
+    レースはここに無い（`predict_race` が出馬表から別途取得する）。
+    """
+    stripped = sql.lstrip().lstrip("(").lstrip()
+    if not re.match(r"(?i)^(select|with)\b", stripped):
+        return {"error": "SELECT または WITH で始まるクエリのみ実行できます。"}
+    if max_rows < 1 or max_rows > 2000:
+        return {"error": "max_rows は 1〜2000 の範囲で指定してください。"}
+
+    conn = duckdb.connect(str(ROOT / "data" / "umagic.duckdb"), read_only=True)
+    try:
+        df = conn.execute(sql).pl()
+    except Exception as e:  # noqa: BLE001 — SQLの誤りをそのままエージェントに返す
+        return {"error": f"クエリの実行に失敗しました: {e}"}
+    finally:
+        conn.close()
+
+    truncated = len(df) > max_rows
+    df = df.head(max_rows)
+    return {
+        "columns": df.columns,
+        "rows": [
+            {k: (str(v) if not isinstance(v, (int, float, type(None))) else v)
+             for k, v in row.items()}
+            for row in df.iter_rows(named=True)
+        ],
+        "n_rows": len(df),
+        "truncated": truncated,
     }
 
 
