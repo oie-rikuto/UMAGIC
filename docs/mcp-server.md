@@ -69,6 +69,15 @@ claude mcp add umagic -- /Users/oierikuto/Desktop/UMAGIC/.venv/bin/python \
 
 保存後、Claude Desktop を再起動すると認識される。
 
+**サーバーのコードを変更したら、Claude Desktop を完全に終了して再起動
+すること**（`⌘Q`。ウィンドウを閉じるだけでは足りない）。MCPサーバーは
+Claude Desktop の起動時にプロセスとして立ち上がり、**その時点の
+`mcp_server.py` をメモリに読み込んだまま生き続ける**——以降にファイルを
+編集しても、走っているプロセスには反映されない。実際にこれで
+「ツールが5種しか見えない」（`D-192`/`D-195` で追加した5種が出てこない）
+という混乱が起きた。症状は「サーバーが古いビルドで動いている」ように
+見えるが、原因はビルドではなく**プロセスの寿命**である。
+
 **Claude Code CLI からの接続は`D-185`で実地検証済み**（`claude mcp add`
 → `✔ Connected`、および`mcp`パッケージのクライアントSDKで
 `initialize`→`tools/list`→`tools/call`の実際のプロトコル往復を確認、
