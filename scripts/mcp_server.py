@@ -15,6 +15,10 @@
                        かを、人手で計算できない量に分解して見せる）
     query_history     本番DB（38,000レース超）に読み取り専用SQLを投げる
                        （`D-192`。過去の傾向を自由に問い合わせる）
+    log_prediction    **発走前に**予想を記録する（`D-195`）。結果確定済み
+                       のレースは拒否する
+    score_agent       記録済みの予想を採点する（`D-195`。信頼区間つき）
+    list_logged_predictions  記録の一覧
     lookup_doc        `D-xxx`/`Q-xxx`/`R-xxx`/`F-xxx` の全文を1件返す
                        （それぞれ `decisions.md`/`open-questions.md`/
                        `requirements.md`/`domain-knowledge.md`）
@@ -53,6 +57,15 @@ from umagic.production_model import (
     CACHE_META_FILENAME,
     explain_with_cache,
     predict_with_cache,
+)
+from umagic.prediction_log import (
+    DEFAULT_LOG_PATH,
+    Pick,
+    PredictionRecord,
+    append_prediction,
+    list_predictions,
+    now_iso,
+    score_predictions,
 )
 from umagic.sources.netkeiba import parse_shutuba
 
@@ -293,6 +306,90 @@ def query_history(sql: str, max_rows: int = 200) -> dict:
         "n_rows": len(df),
         "truncated": truncated,
     }
+
+
+@server.tool()
+def log_prediction(
+    race_id: str, picks: list[dict], agent: str = "selector-v1",
+    confidence: str = "", reasoning: str = "", model_probs: dict | None = None,
+) -> dict:
+    """**発走前に**予想を記録する（`D-195`）。後で採点するために使う。
+
+    `picks` は買い目のリスト。各要素は
+    `{"bet_type": "複勝", "horse_numbers": [3], "stake": 1.0, "note": "..."}`。
+    `bet_type` は `"単勝"`/`"複勝"`/`"ワイド"` のみ（3連単等は`D-008`により
+    検出力が無いため対象外）。`stake` は金額ではなく単位を固定した相対値。
+
+    **結果が既に確定しているレースは拒否する。** 結果を見てから書いた予想は
+    検証に使えないため（`D-187` が示した in-sample の罠と同じ）。同じ
+    `race_id` × `agent` の重複記録も拒否する（後出しでの差し替え防止）。
+
+    `agent` は構成の名前。異なる方針のエージェントを比較したいときに分ける。
+    `confidence` は自己申告の確信度（`"高"`/`"中"`/`"低"` など）。
+
+    **記録しただけでは何も検証されない。** `score_predictions` で採点でき
+    るのは結果が確定してからで、`D-008` の規律上、意味のある結論には
+    相当数の蓄積が要る。
+    """
+    try:
+        pick_objs = [
+            Pick(bet_type=p["bet_type"], horse_numbers=[int(n) for n in p["horse_numbers"]],
+                 stake=float(p.get("stake", 1.0)), note=str(p.get("note", "")))
+            for p in picks
+        ]
+    except (KeyError, TypeError, ValueError) as e:
+        return {"error": f"picks の形式が不正です: {e}"}
+
+    conn = duckdb.connect(str(ROOT / "data" / "umagic.duckdb"), read_only=True)
+    try:
+        race_date = conn.execute(
+            "SELECT date FROM races WHERE race_id = ?", [int(race_id)],
+        ).fetchone()
+        record = PredictionRecord(
+            race_id=int(race_id),
+            race_date=str(race_date[0]) if race_date else "",
+            logged_at=now_iso(), agent=agent, picks=pick_objs,
+            confidence=confidence, reasoning=reasoning,
+            model_probs={str(k): float(v) for k, v in (model_probs or {}).items()},
+        )
+        append_prediction(record, log_path=ROOT / DEFAULT_LOG_PATH, conn=conn)
+    except ValueError as e:
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+    return {
+        "logged": True, "race_id": int(race_id), "agent": agent,
+        "n_picks": len(pick_objs),
+        "note": "発走前の記録として保存した。結果確定後に score_predictions で採点できる。",
+    }
+
+
+@server.tool()
+def score_agent(agent: str | None = None) -> dict:
+    """記録済みの予想のうち、**結果が確定したものだけ**を採点する（`D-195`）。
+
+    券種別・全体の賭け数・回収率・95%信頼区間（レース単位ではなく賭け
+    1点単位のブートストラップ）を返す。`agent` を指定するとその構成だけを
+    採点する（省略時は全件）。
+
+    **`D-008` の規律を必ず守ること**——単勝回収率の標準誤差は概算
+    `4/√n` で、n=240程度でも74%〜126%の範囲は有意差を主張できない。
+    少数の結果から「当たった」「この方法は有効だ」と結論しないこと。
+    戻り値の `caveat` に現在の n に基づく注意を含めている。
+    """
+    conn = duckdb.connect(str(ROOT / "data" / "umagic.duckdb"), read_only=True)
+    try:
+        return score_predictions(conn, log_path=ROOT / DEFAULT_LOG_PATH, agent=agent)
+    finally:
+        conn.close()
+
+
+@server.tool()
+def list_logged_predictions(agent: str | None = None) -> dict:
+    """記録済みの予想を一覧で返す（採点はしない、`D-195`）。"""
+    df = list_predictions(log_path=ROOT / DEFAULT_LOG_PATH, agent=agent)
+    return {"n": len(df), "predictions": df.to_dicts()}
 
 
 @server.tool()

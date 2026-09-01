@@ -18,6 +18,9 @@
 | `lookup_doc(doc_id)` | `D-xxx`/`Q-xxx`/`R-xxx`/`F-xxx` のいずれかを指定して全文を1件取得する |
 | `search_docs(query, doc=None)` | 上記4体系（`decisions.md`/`open-questions.md`/`requirements.md`/`domain-knowledge.md`）を横断検索する |
 | `list_source_files(subdir)` | `src/umagic/` または `docs/` 配下のファイル一覧を返す |
+| `log_prediction(race_id, picks, agent, ...)` | **発走前に**予想を記録する（`D-195`）。結果確定済みのレースは拒否する。券種は`単勝`/`複勝`/`ワイド`のみ |
+| `score_agent(agent)` | 記録済みの予想を採点する（`D-195`）。回収率と95%信頼区間 |
+| `list_logged_predictions(agent)` | 記録の一覧 |
 | `read_source(path)` | 実装本体（`.py`）・仕様書（`docs/spec/*.md`）の中身をそのまま返す |
 
 `predict_race` の `race_id` は netkeiba の12桁レースID（例:
