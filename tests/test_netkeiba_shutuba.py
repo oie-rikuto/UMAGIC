@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
+import pytest
+
 from tests.fixtures.build_shutuba import build_shutuba_html
 from umagic.sources.base import RawPage
 from umagic.sources.netkeiba import parse_shutuba
@@ -113,3 +115,35 @@ def test_n_entries_can_exceed_parsed_rows_when_scratched():
     parsed = parse_shutuba(_page(html, 1))
     assert parsed.race["n_entries"] == 16
     assert len(parsed.entries) == 15
+
+
+def test_post_positions_not_drawn_raises_dedicated_error():
+    """`D-196`: 枠順抽選前の出馬表は専用の例外で区別する。
+
+    「ページが未公開」とは別の状態——待てば解消するので、呼び出し側が
+    再取得を案内できるようにする。`F-801`（枠順バイアス）が確定しない
+    まま予測しても意味が無い。
+    """
+    from umagic.sources.netkeiba import PostPositionsNotDrawn
+
+    body = build_shutuba_html(
+        race_id=202606040111, date_y=2026, date_m=9, date_d=5,
+        course="中山", race_number=11, title="京成杯AH", grade="G3",
+        entries=[{}, {}, {}], post_positions_drawn=False,
+    )
+    with pytest.raises(PostPositionsNotDrawn, match="枠順抽選"):
+        parse_shutuba(_page(body, "202606040111"))
+
+
+def test_course_falls_back_to_racedata02_before_payout_link_exists():
+    """`D-196`: 発走前は払戻リンクが無いので `RaceData02` から会場を取る。"""
+    body = build_shutuba_html(
+        race_id=202606040211, date_y=2026, date_m=9, date_d=6,
+        course="中山", race_number=11, title="紫苑S", grade="G2",
+        meeting_no=4, meeting_day=2,
+        entries=[{}, {}], with_payout_link=False,
+    )
+    out = parse_shutuba(_page(body, "202606040211"))
+    assert out.race["course"] == "中山"
+    assert out.race["meeting_no"] == 4
+    assert out.race["meeting_day"] == 2

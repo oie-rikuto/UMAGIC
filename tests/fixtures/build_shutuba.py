@@ -38,7 +38,7 @@ HEADER_TMPL = """
 </div>
 </div>
 <div class="RaceList_Item03">
-<a href="../top/payback_list.html?kaisai_date={date_y}{date_m:02d}{date_d:02d}&kaisai_id=x" class="LinkMore">{course}払戻一覧</a>
+{payout_link}
 </div>
 """
 
@@ -71,6 +71,25 @@ ROW_TMPL = """
 </tr>
 """
 
+UNDRAWN_ROW_TMPL = """
+<tr class="HorseList" id="tr_{number}">
+<td class="Waku Txt_C"><span></span></td>
+<td class="Umaban Txt_C"></td>
+<td class="CheckMark Horse_Select"></td>
+<td class="HorseInfo">
+<div><div>
+<span class="HorseName"><a href="https://db.netkeiba.com/horse/{horse_key}" target="_blank" title="{horse_name}">{horse_name}</a></span>
+</div></div>
+</td>
+<td class="Barei Txt_C">{sex_age}</td>
+<td class="Txt_C">{weight_carried}</td>
+<td class="Jockey">
+<a href="https://db.netkeiba.com/jockey/result/recent/{jockey_key}/" target="_blank" title="j">{jockey_name}</a>
+</td>
+<td class="Trainer"><span class="Label{affiliation_label}">{affiliation_name}</span><a href="https://db.netkeiba.com/trainer/result/recent/{trainer_key}/" target="_blank" title="t">{trainer_name}</a></td>
+</tr>
+"""
+
 _GRADE_ICON_NUM = {"G1": "1", "G2": "2", "G3": "3"}
 
 
@@ -85,6 +104,8 @@ def build_shutuba_html(
     age_cond: str = "3歳以上", race_class: str = "オープン", weight_rule: str = "馬齢",
     n_entries: int | None = None,
     entries: list[dict] | None = None,
+    post_positions_drawn: bool = True,
+    with_payout_link: bool = True,
 ) -> bytes:
     entries = entries or []
     n_entries = n_entries if n_entries is not None else len(entries)
@@ -104,6 +125,10 @@ def build_shutuba_html(
         track_condition_abbr=tc_abbr, meeting_no=meeting_no, meeting_day=meeting_day,
         age_cond=age_cond, race_class=race_class, weight_rule=weight_rule,
         n_entries=n_entries,
+        payout_link=(
+            '<a href="../top/payback_list.html?kaisai_id=x" class="LinkMore">'
+            f'{course}払戻一覧</a>' if with_payout_link else ""
+        ),
     )
 
     rows = []
@@ -115,7 +140,8 @@ def build_shutuba_html(
             trainer_name="調教師", horse_weight="480", weight_diff="0",
         )
         row.update(e)
-        rows.append(ROW_TMPL.format(**row))
+        tmpl = ROW_TMPL if post_positions_drawn else UNDRAWN_ROW_TMPL
+        rows.append(tmpl.format(**row))
     table = TABLE_TMPL.format(rows="".join(rows))
 
     return (header + table + "</body></html>").encode("utf-8")

@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from umagic.cache import LocalCacheFetcher
 from umagic.inference import build_overlay
 from umagic.production_model import CACHE_META_FILENAME, predict_with_cache
-from umagic.sources.netkeiba import parse_shutuba
+from umagic.sources.netkeiba import PostPositionsNotDrawn, parse_shutuba
 
 UA = "UMAGIC-dev/0.1 (personal research; contact: repository owner)"
 CACHE_DIR = Path("data/prediction_cache")
@@ -52,7 +52,11 @@ def main() -> int:
                                min_interval=args.sleep)
     url = f"https://race.netkeiba.com/race/shutuba.html?race_id={args.race_id}"
     page = fetcher.get(url, source="netkeiba_jra", page_kind="shutuba", source_key=args.race_id)
-    shutuba = parse_shutuba(page)
+    try:
+        shutuba = parse_shutuba(page)
+    except PostPositionsNotDrawn as e:
+        print(f"[待機] {e}", file=sys.stderr)
+        return 2
 
     print(f"[出馬表] {shutuba.race['date']} {shutuba.race['course']}"
           f"{shutuba.race['race_number']}R {shutuba.race['title']}"

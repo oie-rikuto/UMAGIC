@@ -35,6 +35,14 @@ _STRIP_RE = re.compile(
 )
 
 
+class PostPositionsNotDrawn(RuntimeError):
+    """出馬表は公開されているが、枠順抽選がまだ行われていない（`D-196`）。
+
+    「ページが未公開」とは区別する——待てば解消する一時的な状態であり、
+    `F-801`（枠順バイアス）が確定するまで予測しても意味が無い。
+    """
+
+
 def url_for(source_key: str, page_kind: PageKind) -> str:
     """`D-037` のページ選択規則。確定済みレースは `archive`、発走前は `shutuba`。"""
     return PAGES[page_kind].format(key=source_key)
@@ -817,6 +825,7 @@ def _parse_shutuba_header(text: str, race_id: int) -> dict:
     meeting_no = meeting_day = None
     race_class = weight_rule = None
     n_entries = None
+    course_from_data02 = None
     if data02_m:
         spans = [html.unescape(re.sub(r"<.*?>", "", s)).strip()
                  for s in re.findall(r"<span>(.*?)</span>", data02_m.group(1), re.S)]
@@ -829,9 +838,16 @@ def _parse_shutuba_header(text: str, race_id: int) -> dict:
         weight_rule = next((w for w in _WEIGHT_RULES if any(w in s for s in spans)), None)
         ne_m = re.search(r"(\d+)頭", " ".join(spans))
         n_entries = int(ne_m.group(1)) if ne_m else None
+        # 「4回 中山 1日目」の会場名。`払戻一覧` リンクは結果確定後にしか
+        # 存在しないため、発走前のページではこちらが唯一の取得元（`D-196`）
+        flat = re.sub(r"\s+", " ", " ".join(spans))
+        kaisai_m = re.search(r"\d+回\s*(\S+?)\s*\d+日目", flat)
+        if kaisai_m:
+            course_from_data02 = kaisai_m.group(1)
 
+    # 結果確定後のページにだけある払戻リンク。発走前は `RaceData02` に頼る
     course_m = re.search(r">(\S+?)\s*払戻一覧</a>", text)
-    course = course_m.group(1) if course_m else None
+    course = course_m.group(1) if course_m else course_from_data02
 
     return {
         "date": race_date, "course": course, "race_number": race_number, "title": title,
@@ -850,6 +866,18 @@ def _parse_shutuba_entries(text: str) -> list[dict]:
     segment = text[tbl_m.start():close_m]
 
     rows = re.findall(r'<tr class="HorseList"[^>]*>(.*?)</tr>', segment, re.S)
+
+    # 枠順抽選の前は馬名・騎手・斤量まで載るが、枠番・馬番のセルが空になる
+    # （`<td class="Umaban Txt_C"></td>`）。`F-801`（枠順バイアス）が実際に
+    # 効いている以上、この状態で予測しても意味が無いため、行が存在するのに
+    # 馬番が1つも取れない場合は「未公開」ではなく専用の例外で区別する（`D-196`）
+    if rows and not any(re.search(r'Umaban\d+[^>]*>\s*\d+\s*<', r) for r in rows):
+        raise PostPositionsNotDrawn(
+            f"出馬表は公開されていますが（{len(rows)}頭）、枠順抽選がまだ行われて"
+            "いません。枠番・馬番が確定してから（通常は発走の1〜2日前）"
+            "再取得してください。"
+        )
+
     entries: list[dict] = []
     for row in rows:
         num_m = re.search(r'Umaban\d+[^>]*>\s*(\d+)\s*<', row)

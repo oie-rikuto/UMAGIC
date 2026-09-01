@@ -67,7 +67,7 @@ from umagic.prediction_log import (
     now_iso,
     score_predictions,
 )
-from umagic.sources.netkeiba import parse_shutuba
+from umagic.sources.netkeiba import PostPositionsNotDrawn, parse_shutuba
 
 ROOT = Path(__file__).parent.parent
 UA = "UMAGIC-dev/0.1 (personal research; contact: repository owner)"
@@ -123,7 +123,10 @@ def predict_race(race_id: str) -> dict:
     fetcher = LocalCacheFetcher(cache_dir=ROOT / "data" / "cache", user_agent=UA, min_interval=5.0)
     url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
     page = fetcher.get(url, source="netkeiba_jra", page_kind="shutuba", source_key=race_id)
-    shutuba = parse_shutuba(page)
+    try:
+        shutuba = parse_shutuba(page)
+    except PostPositionsNotDrawn as e:
+        return {"error": str(e), "retry_later": True}
 
     if not shutuba.entries:
         return {"error": "出馬表が取得できませんでした（未公開、またはページ構造の想定外）"}
@@ -197,7 +200,10 @@ def explain_race(race_id: str, top_k: int = 6) -> dict:
     fetcher = LocalCacheFetcher(cache_dir=ROOT / "data" / "cache", user_agent=UA, min_interval=5.0)
     url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
     page = fetcher.get(url, source="netkeiba_jra", page_kind="shutuba", source_key=race_id)
-    shutuba = parse_shutuba(page)
+    try:
+        shutuba = parse_shutuba(page)
+    except PostPositionsNotDrawn as e:
+        return {"error": str(e), "retry_later": True}
     if not shutuba.entries:
         return {"error": "出馬表が取得できませんでした（未公開、またはページ構造の想定外）"}
 
