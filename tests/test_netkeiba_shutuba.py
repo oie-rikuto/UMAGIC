@@ -147,3 +147,37 @@ def test_course_falls_back_to_racedata02_before_payout_link_exists():
     assert out.race["course"] == "中山"
     assert out.race["meeting_no"] == 4
     assert out.race["meeting_day"] == 2
+
+
+def test_foreign_trained_horse_with_empty_netkeiba_id_still_yields_name():
+    """`D-199`: netkeibaに馬IDを持たない出走馬（海外調教馬等）は
+    `href="…/horse/"`（ID部分が空）になり、`\\w+`前提の正規表現だと
+    行全体が不一致になって**存在する馬名まで失われる**。
+
+    実データ（セントウルS2026、外国馬「ファストネットワーク」・
+    調教師「イプ」）で発見した欠陥の再現。同じ構造は
+    `/trainer/result/recent//`（トレーナーID空）にも及ぶ。
+    """
+    body = build_shutuba_html(
+        race_id=202609040211, date_y=2026, date_m=9, date_d=6,
+        course="阪神", race_number=11, title="セントウルS", grade="G2",
+        entries=[
+            {"number": 1, "horse_key": "2020123456", "horse_name": "普通の馬",
+             "trainer_key": "01234", "trainer_name": "普通の調教師"},
+            {"number": 2, "horse_key": "", "horse_name": "ファストネットワーク",
+             "sex_age": "セ6", "jockey_key": "05585", "jockey_name": "レーン",
+             "affiliation_label": "3", "affiliation_name": "地方",
+             "trainer_key": "", "trainer_name": "イプ"},
+        ],
+    )
+    entries = parse_shutuba(_page(body, "202609040211")).entries
+    assert entries[0]["horse_name"] == "普通の馬"
+    assert entries[0]["horse_source_key"] == "2020123456"
+
+    foreign = entries[1]
+    assert foreign["horse_name"] == "ファストネットワーク"
+    assert foreign["horse_source_key"] is None  # 空IDは None に正規化される
+    assert foreign["trainer_name"] == "イプ"
+    assert foreign["trainer_source_key"] is None
+    assert foreign["jockey_name"] == "レーン"  # 通常どおりIDありのケース
+    assert foreign["affiliation"] is None  # 「地方」は東西どちらにも属さない

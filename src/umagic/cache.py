@@ -25,12 +25,23 @@ class RobotsDisallowed(RuntimeError):
     """robots.txt がそのホストへの取得を禁止している（D-014 条件3）。"""
 
 
+#: 無期限キャッシュの対象から外すページ種別（`D-199`）。`shutuba`
+#: （発走前の出馬表）は対象レースの発走までに複数回内容が変わる
+#: （登録発表→枠順確定→馬体重発表）ため、「一度取得したら不変」という
+#: このキャッシュの前提が成り立たない。`day_index`（`D-188`）でも
+#: 同じ構造の事故が起きたが、あちらは「netkeiba側の公開が遅れる」
+#: narrow window の問題で恒久対策は保留のままだった——`shutuba` は
+#: レース対象期間中ずっと変わり続けるため、キャッシュしないのが正しい。
+NO_CACHE_PAGE_KINDS: frozenset[str] = frozenset({"shutuba"})
+
+
 @dataclass
 class LocalCacheFetcher:
     """生バイト列を gzip 圧縮してローカルに保存する `Fetcher`。
 
-    キャッシュキーは URL。期限を設けない。キャッシュヒット時は
-    HTTPリクエストを発行しない。
+    キャッシュキーは URL。期限を設けない（`NO_CACHE_PAGE_KINDS` に
+    該当するページ種別を除く）。キャッシュヒット時は HTTPリクエストを
+    発行しない。
     """
 
     cache_dir: Path
@@ -102,8 +113,9 @@ class LocalCacheFetcher:
 
     def get(self, url: str, *, source: str, page_kind: PageKind,
             source_key: str) -> RawPage:
+        no_cache = page_kind in NO_CACHE_PAGE_KINDS
         cache_path = self._cache_path(url)
-        if cache_path.exists():
+        if not no_cache and cache_path.exists():
             body = gzip.decompress(cache_path.read_bytes())
             return RawPage(
                 source=source, page_kind=page_kind, source_key=source_key,
@@ -113,7 +125,8 @@ class LocalCacheFetcher:
 
         self.check_robots(url)
         body, charset, _status = self._throttled_fetch(url)
-        cache_path.write_bytes(gzip.compress(body))
+        if not no_cache:
+            cache_path.write_bytes(gzip.compress(body))
         return RawPage(
             source=source, page_kind=page_kind, source_key=source_key,
             url=url, body=body, encoding=charset or "unknown",

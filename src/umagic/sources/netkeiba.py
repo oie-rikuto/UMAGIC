@@ -887,8 +887,13 @@ def _parse_shutuba_entries(text: str) -> list[dict]:
         waku_m = re.search(r'"Waku\d+[^>]*>\s*<span>\s*(\d+)\s*</span>', row)
         frame = int(waku_m.group(1)) if waku_m else None
 
-        horse_m = re.search(r'<span class="HorseName"><a href="[^"]*?/horse/(\w+)"[^>]*>([^<]+)', row)
-        horse_key = horse_m.group(1) if horse_m else None
+        # `(\w*)` — 海外調教馬など netkeiba に馬IDを持たない出走馬は
+        # `href="…/horse/"`（ID部分が空）になる。`\w+` のままだと正規表現
+        # 全体が不一致になり、**存在する馬名まで丸ごと拾えなくなる**
+        # （`D-199`で実データ・セントウルS2026で発見: 外国馬「ファストネット
+        # ワーク」の行がこれで名前ごと欠落した）
+        horse_m = re.search(r'<span class="HorseName"><a href="[^"]*?/horse/(\w*)"[^>]*>([^<]+)', row)
+        horse_key = horse_m.group(1) or None if horse_m else None
         horse_name = html.unescape(horse_m.group(2)).strip() if horse_m else None
 
         sa_m = re.search(r'"Barei Txt_C">\s*(\S+?)\s*</td>', row)
@@ -899,18 +904,23 @@ def _parse_shutuba_entries(text: str) -> list[dict]:
         wc_m = re.search(r'<td class="Txt_C">\s*(\d+\.\d)\s*</td>', row)
         weight_carried = float(wc_m.group(1)) if wc_m else None
 
-        jockey_m = re.search(r'/jockey/result/recent/(\w+)/"[^>]*>\s*([^<]*?)\s*</a>', row)
-        jockey_key = jockey_m.group(1) if jockey_m else None
+        # ID部分を `(\w*)` にする理由は horse_m と同じ（`D-199`）。同じ
+        # セントウルS2026の行で、この外国馬の調教師（表記「地方」）も
+        # `href="…/trainer/result/recent//"`（ID空）で名前が欠落していた
+        jockey_m = re.search(r'/jockey/result/recent/(\w*)/"[^>]*>\s*([^<]*?)\s*</a>', row)
+        jockey_key = jockey_m.group(1) or None if jockey_m else None
         jockey_name = html.unescape(jockey_m.group(2)).strip() if jockey_m else None
 
         trainer_m = re.search(
             r'<td class="Trainer"><span class="Label\d">(\S+?)</span>'
-            r'<a href="[^"]*?/trainer/result/recent/(\w+)/"[^>]*>\s*([^<]*?)\s*</a>', row,
+            r'<a href="[^"]*?/trainer/result/recent/(\w*)/"[^>]*>\s*([^<]*?)\s*</a>', row,
         )
         affiliation = trainer_key = trainer_name = None
         if trainer_m:
+            # 「地方」（地方競馬・海外所属）は東西どちらにも属さないため
+            # `.get()` が意図どおり `None` を返す。新しいラベルを足す必要はない
             affiliation = {"美浦": "東", "栗東": "西"}.get(trainer_m.group(1))
-            trainer_key = trainer_m.group(2)
+            trainer_key = trainer_m.group(2) or None
             trainer_name = html.unescape(trainer_m.group(3)).strip()
 
         hw_m = re.search(r'<td class="Weight">\s*(\d+)<small>\(([+-]?\d+)\)</small>', row)
