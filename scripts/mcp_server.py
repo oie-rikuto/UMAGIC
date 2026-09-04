@@ -51,7 +51,7 @@ import duckdb
 import polars as pl
 from mcp.server.mcpserver import MCPServer
 
-from umagic.cache import LocalCacheFetcher
+from umagic.cache import LocalCacheFetcher, RobotsDisallowed
 from umagic.inference import build_overlay
 from umagic.production_model import (
     CACHE_META_FILENAME,
@@ -98,6 +98,43 @@ server = MCPServer(
 )
 
 
+def _fetch_shutuba_safe(race_id: str):
+    """出馬表を取得・パースする。**失敗時は例外を投げず `dict` を返す**（`D-200`）。
+
+    `fetcher.get()`（ライブのネットワーク取得、`D-199`で常時ライブ化）は
+    `predict_race`/`explain_race` のどちらにも共通する経路だが、従来
+    ここに例外処理が無く、ネットワークエラー（タイムアウト・DNS失敗・
+    `robots.txt`拒否等）が起きると`UnexpectedToolError`という素の例外
+    としてプロトコル層まで漏れていた——実運用でこの形の失敗が実際に
+    発生し、原因の特定が難しくなった（`D-200`）。
+
+    戻り値: 成功時は `ParsedShutuba`、失敗時は `{"error": ..., ...}` の
+    `dict`。呼び出し側は `isinstance(result, dict)` で判定すること。
+    """
+    fetcher = LocalCacheFetcher(cache_dir=ROOT / "data" / "cache", user_agent=UA, min_interval=5.0)
+    url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
+    try:
+        page = fetcher.get(url, source="netkeiba_jra", page_kind="shutuba", source_key=race_id)
+    except RobotsDisallowed as e:
+        return {"error": f"robots.txtにより取得が禁止されています: {e}"}
+    except Exception as e:  # noqa: BLE001 — 原因不明のネットワーク障害もそのまま伝える
+        return {"error": f"出馬表の取得に失敗しました（{type(e).__name__}）: {e}",
+                "hint": "ネットワーク到達性の問題の可能性がある。時間をおいて再試行するか、"
+                        "python scripts/mcp_server.py を直接実行してこのエラーが"
+                        "再現するか確認すること。"}
+
+    try:
+        shutuba = parse_shutuba(page)
+    except PostPositionsNotDrawn as e:
+        return {"error": str(e), "retry_later": True}
+    except Exception as e:  # noqa: BLE001 — パーサーの未知の欠陥も原因が見える形で返す
+        return {"error": f"出馬表の解析に失敗しました（{type(e).__name__}）: {e}"}
+
+    if not shutuba.entries:
+        return {"error": "出馬表が取得できませんでした（未公開、またはページ構造の想定外）"}
+    return shutuba
+
+
 @server.tool()
 def predict_race(race_id: str) -> dict:
     """まだ発走していないJRAレースの各馬の勝率を予測する。
@@ -120,16 +157,9 @@ def predict_race(race_id: str) -> dict:
         return {"error": f"推論キャッシュがありません: {meta_path}。"
                           "先に scripts/build_prediction_cache.py を実行してください。"}
 
-    fetcher = LocalCacheFetcher(cache_dir=ROOT / "data" / "cache", user_agent=UA, min_interval=5.0)
-    url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
-    page = fetcher.get(url, source="netkeiba_jra", page_kind="shutuba", source_key=race_id)
-    try:
-        shutuba = parse_shutuba(page)
-    except PostPositionsNotDrawn as e:
-        return {"error": str(e), "retry_later": True}
-
-    if not shutuba.entries:
-        return {"error": "出馬表が取得できませんでした（未公開、またはページ構造の想定外）"}
+    shutuba = _fetch_shutuba_safe(race_id)
+    if isinstance(shutuba, dict):
+        return shutuba
 
     conn = duckdb.connect(":memory:")
     try:
@@ -197,15 +227,9 @@ def explain_race(race_id: str, top_k: int = 6) -> dict:
         return {"error": f"推論キャッシュがありません: {meta_path}。"
                           "先に scripts/build_prediction_cache.py を実行してください。"}
 
-    fetcher = LocalCacheFetcher(cache_dir=ROOT / "data" / "cache", user_agent=UA, min_interval=5.0)
-    url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
-    page = fetcher.get(url, source="netkeiba_jra", page_kind="shutuba", source_key=race_id)
-    try:
-        shutuba = parse_shutuba(page)
-    except PostPositionsNotDrawn as e:
-        return {"error": str(e), "retry_later": True}
-    if not shutuba.entries:
-        return {"error": "出馬表が取得できませんでした（未公開、またはページ構造の想定外）"}
+    shutuba = _fetch_shutuba_safe(race_id)
+    if isinstance(shutuba, dict):
+        return shutuba
 
     conn = duckdb.connect(":memory:")
     try:
