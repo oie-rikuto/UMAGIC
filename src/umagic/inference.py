@@ -15,13 +15,22 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 import duckdb
 import polars as pl
 
 from umagic.sources.base import ParsedShutuba
 
-PROD_DB_PATH = "data/umagic.duckdb"
+# `__file__` から辿った絶対パス（`D-200`）。相対パスのままだと、この
+# プロセスの**カレントディレクトリ**次第で解決先が変わる。`uv run` や
+# 開発時のシェルはプロジェクトルートが cwd になるため長らく問題が
+# 顕在化しなかったが、Claude Desktop が `mcp_server.py` をサブプロセス
+# として起動する際は cwd がプロジェクトルートではなく（実測: `/`）、
+# `data/umagic.duckdb` が `/data/umagic.duckdb` に解決されて
+# `IOException: database does not exist` になっていた——本番当日に
+# `predict_race`/`explain_race` が原因不明のまま失敗し続けた真因。
+PROD_DB_PATH = str(Path(__file__).resolve().parent.parent.parent / "data" / "umagic.duckdb")
 
 # `races`/`runners` に UNION する側で埋める `source` 値。本番の "netkeiba_jra"
 # と区別する——対象レースの行は結果が存在しない未確定データであることを

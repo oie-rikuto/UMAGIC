@@ -4735,3 +4735,30 @@ fold 0 で有意に届かなかった（−0.0024、CI [−0.0048, +0.0001]）�
 **検証**: 開発側で4つの`race_id`全てを再度3通りの経路で確認し、いずれも変わらず正常に動作することを確認した（正常系を壊していないことの確認）。テスト全465件通過。
 
 **影響**: `selector-v1`には、Claude Desktopを再起動した状態でもう一度`predict_race`を試すよう伝える。今回の修正でコード自体は変わっていない（既に動いていた経路は動いたまま）ため、**直る保証は無い**——直った場合はネットワーク到達性側の一時的な問題だった可能性が高く、直らなかった場合は今度こそ実際のエラーメッセージ（型名・詳細）が得られるはずなので、それを手がかりに再度切り分ける。
+
+## D-201 `D-200`の根本原因が判明した。`PROD_DB_PATH`がプロセスのカレントディレクトリに依存していた
+
+**状態**: Accepted（`D-200`の「根本原因は未特定」を解消する）
+
+**決定**: Claude Desktopが書き出す`~/Library/Logs/Claude/mcp-server-umagic.log`を直接読んだところ、実際の例外が判明した。
+
+```
+_duckdb.IOException: IO Error: Cannot open database "/data/umagic.duckdb"
+in read-only mode: database does not exist
+  File ".../src/umagic/inference.py", line 68, in build_overlay
+    conn.execute(f"ATTACH '{PROD_DB_PATH}' AS prod (READ_ONLY)")
+```
+
+**`/data/umagic.duckdb`——先頭にスラッシュが付いた、ファイルシステムのルート直下のパスになっていた。** `src/umagic/inference.py`の`PROD_DB_PATH = "data/umagic.duckdb"`が相対パスのままで、プロセスの**カレントディレクトリ**次第で解決先が変わる作りだった。`uv run`や開発時のシェルは常にプロジェクトルートがcwdになるため長らく問題が顕在化しなかったが、**Claude Desktopが`mcp_server.py`をサブプロセスとして起動する際のcwdはプロジェクトルートではない**（実測: `data/umagic.duckdb`が`/data/umagic.duckdb`に解決された＝cwdは`/`相当）。
+
+**これが`D-200`で再現できなかった理由も同時に説明がつく。** 開発側（このセッション）の再現試行は全て私自身のシェルから行っており、シェルのcwdは常にプロジェクトルートだった——`query_history`が終始正常だったのも、そちらは`mcp_server.py`内で`ROOT / "data" / "umagic.duckdb"`と絶対パスで組み立てており、この欠陥の影響を受けなかったため（`D-200`で「両ツールに共通し`query_history`には無いのはライブネットワーク取得」と切り分けたが、**本当の分岐点はネットワーク取得ではなく`PROD_DB_PATH`の解決だった**——両者を切り分けられなかったのは、`predict_race`/`explain_race`がネットワーク取得の直後に`build_overlay()`を呼ぶため、症状の見た目が同じだったことによる）。
+
+**修正**: `PROD_DB_PATH`を`str(Path(__file__).resolve().parent.parent.parent / "data" / "umagic.duckdb")`に変更し、モジュールの`__file__`から辿った絶対パスに固定した——呼び出し元プロセスのcwdに一切依存しなくなる。
+
+**同じ欠陥パターンが`prediction_log.py`の`DEFAULT_LOG_PATH`にもある**（`Path("data/predictions_log.jsonl")`、相対パスのまま）。ただしこちらは`mcp_server.py`側の全呼び出し箇所（`log_prediction`/`score_agent`/`list_logged_predictions`）で`ROOT / DEFAULT_LOG_PATH`と明示的に絶対化しており、現状は実害が無いことを確認した。「デフォルト値は相対のまま持ち、呼び出し側が絶対化する」設計自体は妥当なので変更しないが、**同種の欠陥を生みやすいパターンとして記録しておく**——今後この定数を新しい場所から直接使う場合は、絶対化を忘れないこと。
+
+**検証**: cwdを`/`・`/tmp`に変えた状態で`predict_race`/`explain_race`を実行し、修正前は再現（cwd依存を直接確認）、修正後はどちらも正常に完了することを確認した（京成杯AH16頭）。`tests/test_inference.py`を新設し3件追加（`PROD_DB_PATH`が絶対パスであること、cwdを変えても解決先が変わらないこと、正しく`<repo>/data/umagic.duckdb`を指すこと）。全468件通過。
+
+**教訓**: **`~/Library/Logs/Claude/mcp-server-umagic.log`の存在をもっと早く使うべきだった。** `D-200`では「stdioベースのMCPサーバーは外部からその通信を覗けない」と書いたが、**通信は覗けなくても、サーバー自身の標準エラー出力はClaude Desktopがログファイルに書き出している。** この経路に気づいていれば、`D-200`の防御的な例外処理より先に、一度のログ確認で根本原因に到達できていた。次に同様の「開発側では再現しないがClaude Desktop側でだけ失敗する」状況が起きたら、まずこのログファイルを見ること。
+
+**影響**: `docs/mcp-server.md`の接続手順に、このログファイルの場所と使い方を追記する。`D-200`で追加した構造化エラー処理（`_fetch_shutuba_safe`）は無駄にはならない——今回は原因究明の決め手にならなかったが、他の失敗モードに対する防御としては引き続き有効。
