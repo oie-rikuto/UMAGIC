@@ -13,6 +13,9 @@
     explain_race      同じレースの**スコアの内訳**を`F-xxx`単位で返す
                        （`D-192`。SHAP値。モデルが「なぜ」その評価をした
                        かを、人手で計算できない量に分解して見せる）
+    suggest_exotic_bets  馬連/馬単/ワイド/3連複/3連単の組み合わせを
+                       Harville近似で概算する（`D-202`）。参考値であり
+                       検証不能——log_predictionでは記録・採点できない
     query_history     本番DB（38,000レース超）に読み取り専用SQLを投げる
                        （`D-192`。過去の傾向を自由に問い合わせる）
     log_prediction    **発走前に**予想を記録する（`D-195`）。結果確定済み
@@ -52,6 +55,8 @@ import polars as pl
 from mcp.server.mcpserver import MCPServer
 
 from umagic.cache import LocalCacheFetcher, RobotsDisallowed
+from umagic.harville import SUPPORTED_BET_TYPES as HARVILLE_BET_TYPES
+from umagic.harville import top_combos
 from umagic.inference import build_overlay
 from umagic.production_model import (
     CACHE_META_FILENAME,
@@ -201,6 +206,74 @@ def predict_race(race_id: str) -> dict:
             for r in result.iter_rows(named=True)
         ],
         "caveat": "市場（単勝オッズ）に対する優位は未実証（D-119〜D-180）。賭けの根拠にしないこと。",
+    }
+
+
+@server.tool()
+def suggest_exotic_bets(race_id: str, bet_type: str, top_n: int = 5) -> dict:
+    """`馬連`/`馬単`/`ワイド`/`3連複`/`3連単`の組み合わせを、`predict_race`の
+    単勝勝率からHarville近似で概算し、確率上位`top_n`件を返す（`D-202`）。
+
+    **これは参考情報であり、検証された確率ではない。** UMAGICが直接出力
+    するのは単勝勝率のみで、組み合わせ馬券の確率はHarville近似（1着馬を
+    確率どおり選び、残りの馬で再正規化した勝率を2着以降の確率として
+    再帰適用する）で概算している。`D-153`は同じ近似を複勝市場に適用した
+    結果、人気馬の複勝確率を最大10.6ポイント過大評価すると実測した——
+    他の券種でも同種の偏りがあると見るのが自然だが、個別には未測定。
+
+    **`log_prediction`はこの戻り値を受け付けない。** `単勝`/`複勝`/`ワイド`
+    のみが記録対象で（`D-008`：3連単等は控除率27.5%・超高分散で、現実的な
+    標本数では的中率・回収率の検証ができない）、`馬連`/`馬単`/`3連複`/
+    `3連単`は**提案はできるが記録・採点はできない**。「提案して当落を見て
+    良し悪しを判断する」という使い方はできない——n=1〜数レースの結果は
+    実力と分散を区別できないため（`D-008`）。
+    """
+    if bet_type not in HARVILLE_BET_TYPES:
+        return {"error": f"bet_type={bet_type!r} は対象外です。"
+                          f"{sorted(HARVILLE_BET_TYPES)} のいずれかを指定してください。"}
+
+    meta_path = PREDICTION_CACHE_DIR / CACHE_META_FILENAME
+    if not meta_path.exists():
+        return {"error": f"推論キャッシュがありません: {meta_path}。"
+                          "先に scripts/build_prediction_cache.py を実行してください。"}
+
+    shutuba = _fetch_shutuba_safe(race_id)
+    if isinstance(shutuba, dict):
+        return shutuba
+
+    conn = duckdb.connect(":memory:")
+    try:
+        try:
+            rid = build_overlay(conn, shutuba)
+        except ValueError as e:  # D-184 の重複ガード
+            return {"error": str(e),
+                    "hint": "既に結果が確定しているレースです。過去レースの成績は "
+                            "query_history で引けます。"}
+        target_date = shutuba.race["date"]
+        out = predict_with_cache(conn, rid, target_date, PREDICTION_CACHE_DIR)
+        numbers = conn.execute("SELECT horse_id, number FROM runners WHERE race_id = ?", [rid]).pl()
+    finally:
+        conn.close()
+
+    win_prob = dict(zip(
+        out.join(numbers, on="horse_id", how="inner")["number"].to_list(),
+        out.join(numbers, on="horse_id", how="inner")["win_prob"].to_list(),
+    ))
+    names = {e["number"]: e["horse_name"] for e in shutuba.entries}
+
+    combos = top_combos(win_prob, bet_type, top_n=top_n)
+    return {
+        "race": {"title": shutuba.race["title"], "date": str(target_date)},
+        "bet_type": bet_type,
+        "suggestions": [
+            {"numbers": list(c.numbers),
+             "horse_names": [names.get(n) for n in c.numbers],
+             "approx_prob": round(c.prob, 4)}
+            for c in combos
+        ],
+        "caveat": ("Harville近似による参考値。検証済みの確率ではない（D-153が複勝で"
+                   "実測した過大評価と同種の偏りが疑われる）。log_predictionでは記録・"
+                   "採点できない（D-008/D-202）。当落を見て良し悪しを判断する使い方はできない。"),
     }
 
 
