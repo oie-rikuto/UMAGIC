@@ -89,6 +89,61 @@ def test_shutuba_pages_are_never_cached(tmp_path, monkeypatch):
     assert list(tmp_path.glob("*.html.gz")) == []  # ディスクにも残さない
 
 
+def test_bypass_cache_forces_live_fetch_regardless_of_page_kind(tmp_path, monkeypatch):
+    """`D-204`: `bypass_cache=True`を指定した呼び出しは、`day_index`など
+    本来キャッシュ対象のページ種別でも常にライブ取得し、キャッシュにも残さない。
+
+    実際の事故: 直近日付の`day_index`を早い時点で取得した空の結果が
+    無期限キャッシュに固定され、レース終了後に再取得しても同じ空の
+    結果が返り続けた（`D-188`、および本件の再発）。
+    """
+    f = LocalCacheFetcher(cache_dir=tmp_path, user_agent="test")
+    bodies = [b"<html>empty day</html>", b"<html>populated day</html>"]
+    calls = {"n": 0}
+
+    def fake_fetch(self, url):
+        body = bodies[min(calls["n"], len(bodies) - 1)]
+        calls["n"] += 1
+        return body, "utf-8", 200
+
+    monkeypatch.setattr(LocalCacheFetcher, "_throttled_fetch", fake_fetch)
+    monkeypatch.setattr(LocalCacheFetcher, "check_robots", lambda self, url: None)
+
+    url = "https://db.netkeiba.com/race/list/20260905/"
+    page1 = f.get(url, source="netkeiba_jra", page_kind="day_index",
+                  source_key="20260905", bypass_cache=True)
+    page2 = f.get(url, source="netkeiba_jra", page_kind="day_index",
+                  source_key="20260905", bypass_cache=True)
+
+    assert page1.from_cache is False
+    assert page2.from_cache is False
+    assert calls["n"] == 2
+    assert page1.body == bodies[0]
+    assert page2.body == bodies[1]
+    assert list(tmp_path.glob("*.html.gz")) == []
+
+
+def test_bypass_cache_false_preserves_normal_day_index_caching(tmp_path, monkeypatch):
+    """`bypass_cache`を指定しない（既定`False`）場合、`day_index`は従来
+    どおりキャッシュされる——過去の確定済み日を毎回再取得しないため。"""
+    f = LocalCacheFetcher(cache_dir=tmp_path, user_agent="test")
+    calls = {"n": 0}
+
+    def fake_fetch(self, url):
+        calls["n"] += 1
+        return b"<html>old day</html>", "utf-8", 200
+
+    monkeypatch.setattr(LocalCacheFetcher, "_throttled_fetch", fake_fetch)
+    monkeypatch.setattr(LocalCacheFetcher, "check_robots", lambda self, url: None)
+
+    url = "https://db.netkeiba.com/race/list/20150101/"
+    f.get(url, source="netkeiba_jra", page_kind="day_index", source_key="20150101")
+    page2 = f.get(url, source="netkeiba_jra", page_kind="day_index", source_key="20150101")
+
+    assert page2.from_cache is True
+    assert calls["n"] == 1
+
+
 def test_archive_pages_still_cache_alongside_shutuba(tmp_path, monkeypatch):
     """`D-199`: `shutuba`を無期限キャッシュから外しても、`archive`
     （結果確定済みの過去レース、不変）は従来どおりキャッシュされる。"""

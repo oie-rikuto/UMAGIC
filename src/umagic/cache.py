@@ -112,8 +112,15 @@ class LocalCacheFetcher:
         return body, charset, status
 
     def get(self, url: str, *, source: str, page_kind: PageKind,
-            source_key: str) -> RawPage:
-        no_cache = page_kind in NO_CACHE_PAGE_KINDS
+            source_key: str, bypass_cache: bool = False) -> RawPage:
+        """`bypass_cache=True`のときは読み書きとも無視して常にライブ取得する
+        （`D-204`）。`day_index`は基本的に不変（結果確定後のレース一覧は
+        キャッシュして良い）だが、**直近の日付は netkeiba 側の反映が
+        レース終了後も遅れることがある**——早い時点で取得した空の結果が
+        無期限に固定され続けた事故が実際に2度起きた（`D-188`、本件）。
+        呼び出し側（`sources/`）が対象日付の新しさを判断して指定する。
+        """
+        no_cache = page_kind in NO_CACHE_PAGE_KINDS or bypass_cache
         cache_path = self._cache_path(url)
         if not no_cache and cache_path.exists():
             body = gzip.decompress(cache_path.read_bytes())

@@ -30,6 +30,11 @@ PAGES: dict[PageKind, str] = {
 # JRA競馬場コード（01〜10）。地方競馬場は対象外（D-025 / D-005）
 _JRA_VENUE_CODES = {f"{i:02d}" for i in range(1, 11)}
 
+#: `day_index`のキャッシュを常時バイパスする対象期間（`D-204`）。実測で
+#: レース当日の夜（発走から数時間後）でもまだ`db.netkeiba.com`側の
+#: 日別一覧に反映されていないことを確認した——3日あれば十分な余裕
+_DAY_INDEX_RECENT_DAYS = 3
+
 _STRIP_RE = re.compile(
     r"<script\b.*?</script>|<style\b.*?</style>|<!--.*?-->", re.S | re.I,
 )
@@ -657,8 +662,15 @@ class NetkeibaJraSource:
 
     def list_race_keys(self, day) -> list[str]:
         key = day.strftime("%Y%m%d")
+        # `D-204`: 直近の日付は netkeiba 側の反映がレース終了後も遅れる
+        # ことがある。早い時点で取得した空の結果が無期限キャッシュに
+        # 固定される事故が2度起きたため（`D-188`、9/5当日）、直近
+        # `_RECENT_DAYS`日以内は常にライブ取得する。過去の確定済み日は
+        # 従来どおりキャッシュする（毎回全履歴を再取得しないため）
+        is_recent = (date.today() - day).days <= _DAY_INDEX_RECENT_DAYS
         page = self._fetcher.get(url_for(key, "day_index"), source=self.name,
-                                 page_kind="day_index", source_key=key)
+                                 page_kind="day_index", source_key=key,
+                                 bypass_cache=is_recent)
         return list_race_keys(page)
 
     def url_for(self, source_key: str, page_kind: PageKind) -> str:
@@ -695,8 +707,10 @@ class NetkeibaNarSource:
 
     def list_race_keys(self, day) -> list[str]:
         key = day.strftime("%Y%m%d")
+        is_recent = (date.today() - day).days <= _DAY_INDEX_RECENT_DAYS  # `D-204`
         page = self._fetcher.get(url_for(key, "day_index"), source=self.name,
-                                 page_kind="day_index", source_key=key)
+                                 page_kind="day_index", source_key=key,
+                                 bypass_cache=is_recent)
         return list_nar_race_keys(page, self._course_filter)
 
     def url_for(self, source_key: str, page_kind: PageKind) -> str:

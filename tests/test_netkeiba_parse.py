@@ -612,3 +612,31 @@ def test_trainer_name_excludes_affiliation_marker():
 def test_link_name_absent_is_null():
     from umagic.sources.netkeiba import _parse_link_name
     assert _parse_link_name("[東]") is None
+
+
+def test_list_race_keys_bypasses_cache_for_recent_dates():
+    """`D-204`: `NetkeibaJraSource.list_race_keys`は、対象日が
+    直近（`_DAY_INDEX_RECENT_DAYS`日以内）なら`bypass_cache=True`で
+    `fetcher.get()`を呼ぶ。過去の確定済み日は`False`のまま
+    （毎回全履歴を再取得しないため）。"""
+    from datetime import date, timedelta
+
+    from umagic.sources.netkeiba import NetkeibaJraSource
+
+    calls = []
+
+    class _RecordingFetcher:
+        def get(self, url, *, source, page_kind, source_key, bypass_cache=False):
+            calls.append(bypass_cache)
+            from umagic.sources.base import RawPage
+            from datetime import datetime, timezone
+            return RawPage(source=source, page_kind=page_kind, source_key=source_key,
+                           url=url, body=b"<html></html>", encoding="unknown",
+                           fetched_at=datetime.now(timezone.utc), from_cache=False)
+
+    src = NetkeibaJraSource(_RecordingFetcher())
+    src.list_race_keys(date.today())  # 今日
+    src.list_race_keys(date.today() - timedelta(days=1))  # 直近
+    src.list_race_keys(date.today() - timedelta(days=30))  # 過去
+
+    assert calls == [True, True, False]
