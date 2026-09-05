@@ -103,3 +103,40 @@ def test_score_on_empty_log_is_safe(settled_conn, tmp_path):
     out = score_predictions(settled_conn, log_path=tmp_path / "nothing.jsonl")
     assert out["n_races_logged"] == 0
     assert out["overall"] is None
+
+
+def test_weight_confirmed_defaults_to_none_and_round_trips(tmp_path):
+    """`D-203`: 明示しなければ`None`（未確認）のまま記録・一覧に残る。"""
+    log = tmp_path / "log.jsonl"
+    append_prediction(_record(race_id=1), log_path=log)
+    df = list_predictions(log_path=log)
+    assert df["weight_confirmed"][0] is None
+
+
+def test_weight_confirmed_false_is_preserved_and_surfaced_in_score(settled_conn, tmp_path):
+    """`D-203`: 馬体重未発表のまま記録された件数が`score_predictions`の
+    `warning`に出る（運用ランブック1.2節違反の検知）。"""
+    log = tmp_path / "log.jsonl"
+    rec = PredictionRecord(
+        race_id=1, race_date="2026-09-05", logged_at=now_iso(), agent="selector-v1",
+        picks=[Pick(bet_type="複勝", horse_numbers=[3])], weight_confirmed=False,
+    )
+    append_prediction(rec, log_path=log)
+
+    df = list_predictions(log_path=log)
+    assert df["weight_confirmed"][0] is False
+
+    out = score_predictions(settled_conn, log_path=log)
+    assert "warning" in out
+    assert "1件" in out["warning"]
+
+
+def test_weight_confirmed_true_produces_no_warning(settled_conn, tmp_path):
+    log = tmp_path / "log.jsonl"
+    rec = PredictionRecord(
+        race_id=1, race_date="2026-09-05", logged_at=now_iso(), agent="selector-v1",
+        picks=[Pick(bet_type="複勝", horse_numbers=[3])], weight_confirmed=True,
+    )
+    append_prediction(rec, log_path=log)
+    out = score_predictions(settled_conn, log_path=log)
+    assert "warning" not in out

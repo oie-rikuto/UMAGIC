@@ -4782,3 +4782,23 @@ in read-only mode: database does not exist
 **検証**: 実データ（札幌2歳S）で5券種すべてが正しく動作し、未対応の券種（単勝）が明示的なエラーを返すことを確認した。テスト全483件通過。
 
 **影響**: `R-023`/`R-030`/`D-190`の結論を変えない。`suggest_exotic_bets`の戻り値には`D-153`の偏りとD-008の検出力の限界を毎回明記する。
+
+## D-203 `log_prediction`が馬体重発表前の記録を防げていなかった。サーバー側で機械的に確認する
+
+**状態**: Accepted
+
+**背景**: 9/5の運用で、`selector-v1`が京成杯AHの`log_prediction`を馬体重発表前（14:42 JST、発走60分強前）に実行していたことが、ユーザーの指摘で判明した。`docs/operations/day-of-runbook.md`1.2節は「買い目・確信度・`log_prediction`は当日の馬体重発表後の実行に基づいて行う」と明記しているが、**この記録は違反していた。**
+
+**ユーザーの整理が正確だった**: 「外れたこと自体は手続きの誤りではない（`D-008`が想定する分散の範囲内）。この予想で明確に間違っていたのは、レース前に自分で申告した1点だけ——馬体重発表前に`log_prediction`を打ったこと。結論が変わらなかったので実害は出なかったが、それは13.7%の目が出なかっただけで、正しい手続きではなかった。」
+
+**この違反が発覚したのは`selector-v1`が`reasoning`欄に正直に書いていたから**——「発走約60分前(14:47 JST)時点で馬体重が未発表... f603_unavailableのskューが立った状態」と自己申告していた。**自己申告に頼る設計では、書かれなければ気づけない。**
+
+**決定**: `log_prediction`が呼ばれた時点で、サーバー側が`_fetch_shutuba_safe()`を使って出馬表を再取得し、**全馬の馬体重が発表済みかを機械的に確認する**。エージェントの申告を信用せず、実データを見て判定する——`D-184`の重複ガードと同じ「呼び出し側の正しい振る舞いに期待するのではなく、構造的に検出する」設計方針。
+
+**ハードには拒否しない。** 締切直前で記録せざるを得ない場面（今回がまさにそれ）はありうるため、`weight_confirmed=False`でも記録は通す。ただし記録には`weight_confirmed`（`True`/`False`/`None`＝確認自体に失敗）を必ず添え、`log_prediction`の戻り値と`score_predictions`の集計の両方に**警告として表示する**——次に振り返るときに、この種の記録を除外するか区別できるようにする。
+
+**実装**: `src/umagic/prediction_log.py`の`PredictionRecord`に`weight_confirmed: bool | None = None`を追加。`list_predictions`の一覧にも列を追加。`score_predictions`は`weight_confirmed=False`の件数を数え、1件でもあれば戻り値に`warning`を含める。`scripts/mcp_server.py`の`log_prediction`は、記録の直前に出馬表を再取得して`weight_confirmed`を計算し、`False`なら戻り値にも`warning`を含める。
+
+**検証**: テスト3件追加（`weight_confirmed`が既定で`None`のまま往復すること、`False`が`score_predictions`の`warning`に反映されること、`True`なら`warning`が出ないこと）。実データ（紫苑S、馬体重未発表）で判定ロジックが正しく`False`を返すことを確認した。全486件通過。
+
+**影響**: 既存の記録（9/5の2件）は`weight_confirmed`列を持たない古い形式のまま残る——遡って付け直すことはしない（記録は改変しない設計、`D-195`の発走前記録の強制と同じ考え方）。今後の記録から適用される。

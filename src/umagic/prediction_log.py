@@ -72,6 +72,12 @@ class PredictionRecord:
     confidence: str = ""  # 高 / 中 / 低 など、エージェント自身の申告
     reasoning: str = ""
     model_probs: dict[str, float] = field(default_factory=dict)  # 馬番→UMAGICの勝率
+    # 記録時点で馬体重が発表済みだったか（`D-203`）。`None`は未確認
+    # （呼び出し元がチェックしなかった、または確認自体に失敗した場合）。
+    # エージェントの自己申告ではなく、サーバー側で実データを見て機械的に
+    # 判定する——`selector-v1`が馬体重発表前に記録した実例（9/5、理由欄
+    # には正直に書かれていたが記録自体は防がれなかった）を受けて追加した
+    weight_confirmed: bool | None = None
 
     def to_json(self) -> str:
         return json.dumps({
@@ -79,6 +85,7 @@ class PredictionRecord:
             "logged_at": self.logged_at, "agent": self.agent,
             "confidence": self.confidence, "reasoning": self.reasoning,
             "model_probs": self.model_probs,
+            "weight_confirmed": self.weight_confirmed,
             "picks": [
                 {"bet_type": p.bet_type, "horse_numbers": p.horse_numbers,
                  "stake": p.stake, "note": p.note}
@@ -213,7 +220,8 @@ def score_predictions(
         by_type[bt] = summarize([b for b in bets if b["bet_type"] == bt])
 
     n_settled = len({r["race_id"] for r in raw if r["race_id"] in settled})
-    return {
+    n_weight_unconfirmed = sum(1 for r in raw if r.get("weight_confirmed") is False)
+    result = {
         "n_races_logged": len({r["race_id"] for r in raw}),
         "n_races_settled": n_settled,
         "by_bet_type": by_type,
@@ -224,6 +232,13 @@ def score_predictions(
             "信頼区間を必ず添えて報告すること。"
         ),
     }
+    if n_weight_unconfirmed:
+        result["warning"] = (
+            f"{n_weight_unconfirmed}件が馬体重未発表の状態で記録されている"
+            "（運用ランブック1.2節違反、`D-203`）。f603_unavailableのskewが"
+            "乗った暫定値に基づく記録であり、本命としての評価には使わないこと。"
+        )
+    return result
 
 
 def list_predictions(
@@ -237,11 +252,12 @@ def list_predictions(
         return pl.DataFrame(schema={
             "race_id": pl.Int64, "race_date": pl.Utf8, "agent": pl.Utf8,
             "confidence": pl.Utf8, "n_picks": pl.Int64, "logged_at": pl.Utf8,
+            "weight_confirmed": pl.Boolean,
         })
     return pl.DataFrame([{
         "race_id": r["race_id"], "race_date": r["race_date"], "agent": r["agent"],
         "confidence": r.get("confidence", ""), "n_picks": len(r["picks"]),
-        "logged_at": r["logged_at"],
+        "logged_at": r["logged_at"], "weight_confirmed": r.get("weight_confirmed"),
     } for r in raw])
 
 

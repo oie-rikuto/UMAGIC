@@ -433,6 +433,13 @@ def log_prediction(
     **記録しただけでは何も検証されない。** `score_predictions` で採点でき
     るのは結果が確定してからで、`D-008` の規律上、意味のある結論には
     相当数の蓄積が要る。
+
+    **記録時点で馬体重が発表済みかを、サーバー側で機械的に確認する**
+    （`D-203`）。未発表のまま記録すると拒否はしないが警告を返す——
+    運用ランブック1.2節（馬体重発表前の`predict_race`は暫定、
+    `log_prediction`は発表後に行う）に違反した記録だと後から分かる
+    ようにするため。エージェントの自己申告（`reasoning`に書くかどうか）
+    に頼らない。
     """
     try:
         pick_objs = [
@@ -442,6 +449,13 @@ def log_prediction(
         ]
     except (KeyError, TypeError, ValueError) as e:
         return {"error": f"picks の形式が不正です: {e}"}
+
+    # D-203: 馬体重が発表済みかを機械的に確認する。取得自体に失敗しても
+    # 記録は妨げない——weight_confirmed=None（未確認）のまま記録する
+    weight_confirmed: bool | None = None
+    shutuba_now = _fetch_shutuba_safe(race_id)
+    if not isinstance(shutuba_now, dict) and shutuba_now.entries:
+        weight_confirmed = all(e.get("horse_weight") is not None for e in shutuba_now.entries)
 
     conn = duckdb.connect(str(ROOT / "data" / "umagic.duckdb"), read_only=True)
     try:
@@ -454,6 +468,7 @@ def log_prediction(
             logged_at=now_iso(), agent=agent, picks=pick_objs,
             confidence=confidence, reasoning=reasoning,
             model_probs={str(k): float(v) for k, v in (model_probs or {}).items()},
+            weight_confirmed=weight_confirmed,
         )
         append_prediction(record, log_path=ROOT / DEFAULT_LOG_PATH, conn=conn)
     except ValueError as e:
@@ -461,11 +476,16 @@ def log_prediction(
     finally:
         conn.close()
 
-    return {
+    out = {
         "logged": True, "race_id": int(race_id), "agent": agent,
-        "n_picks": len(pick_objs),
+        "n_picks": len(pick_objs), "weight_confirmed": weight_confirmed,
         "note": "発走前の記録として保存した。結果確定後に score_predictions で採点できる。",
     }
+    if weight_confirmed is False:
+        out["warning"] = ("馬体重が未発表の状態で記録された（運用ランブック1.2節違反、"
+                           "`D-203`）。f603_unavailableのskewが乗った暫定値に基づく——"
+                           "本命としての評価には使わないこと。")
+    return out
 
 
 @server.tool()
