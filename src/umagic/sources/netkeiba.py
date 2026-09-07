@@ -405,12 +405,18 @@ def _parse_link_name(cell_html: str) -> str | None:
 
 
 def _parse_id_link(cell_html: str) -> str | None:
+    # ID部分を `(\w*)` にする理由は shutuba パーサーと同じ（`D-199`/
+    # `D-206`）。海外調教馬など netkeiba に登録IDを持たない実体は
+    # `href="/horse/"`（ID部分が空）になり、`\w+` のままだと正規表現
+    # 全体が不一致になって取れるはずのIDまで失われる
     m = re.search(
         r'href="/(?:horse|jockey/result/recent|trainer/result/recent|owner/result/recent)'
-        r'/(\w+)/?"',
+        r'/(\w*)/?"',
         cell_html,
     )
-    return m.group(1) if m else None
+    if not m:
+        return None
+    return m.group(1) or None
 
 
 def _parse_finish_table(
@@ -532,7 +538,12 @@ _SPLIT_DASH = re.compile(r"\s*-\s*")
 
 def _parse_combination(bet_type: str, raw: str) -> list[int]:
     if bet_type in _ORDERED_TYPES:
-        return [int(x) for x in _SPLIT_ARROW.split(raw)]
+        # netkeibaの表記が矢印(→)からハイフン(-)に変わった実例を
+        # 2026-09に確認した（`D-206`）。矢印が無ければハイフン区切りに
+        # フォールバックする。着順そのものの並びなので、いずれの区切り
+        # でも sorted にしない（`_ASC_TYPES` との違い）
+        parts = _SPLIT_ARROW.split(raw) if "→" in raw else _SPLIT_DASH.split(raw)
+        return [int(x) for x in parts]
     if bet_type in _ASC_TYPES:
         return sorted(int(x) for x in _SPLIT_DASH.split(raw))
     return [int(raw)]  # 単勝・複勝

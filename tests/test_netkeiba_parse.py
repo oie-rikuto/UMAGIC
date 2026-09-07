@@ -293,6 +293,27 @@ def test_payouts_combination_normal_form():
     assert by_type["馬連"]["comb_key"] == "5-9"
 
 
+def test_payouts_ordered_types_accept_hyphen_form():
+    """`D-206`: netkeibaの表記が矢印(→)からハイフン(-)に変わった実例を
+    2026-09に確認した（9/5週の実データ、`ValueError: invalid literal
+    for int() with base 10: '11-9'` として70レース全件が失敗した）。
+    矢印が無い場合はハイフン区切りにフォールバックし、着順の並びは
+    そのまま保つ（`_ASC_TYPES`のような`sorted`はしない）。
+    """
+    html = build_archive_html(
+        race_id=1, date_y=2026, date_m=9, date_d=5, corner_nos=[1, 2, 3, 4],
+        runners=[_runner(passage="1-1-1-1")],
+        payouts=[
+            {"bet_type": "馬単", "combo": "11-9", "payout": 1360, "popularity": 6},
+            {"bet_type": "三連単", "combo": "11-9-5", "payout": 11370, "popularity": 79},
+        ],
+    )
+    pr = parse_archive(_page(html))
+    by_type = {p["bet_type"]: p for p in pr.payouts}
+    assert by_type["馬単"]["combination"] == [11, 9]       # 着順のまま(sortedしない)
+    assert by_type["三連単"]["combination"] == [11, 9, 5]  # 着順のまま
+
+
 def test_laps_parsed_in_order():
     html = build_archive_html(race_id=1, date_y=2023, date_m=1, date_d=1,
                               corner_nos=[1, 2, 3, 4], runners=[_runner(passage="1-1-1-1")],

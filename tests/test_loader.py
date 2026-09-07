@@ -147,3 +147,42 @@ def test_nar_race_class_writes_through_widened_check(conn):
         "SELECT course, race_class FROM races WHERE race_id = 10"
     ).fetchone()
     assert row == ("大井", "C1")
+
+
+def test_horse_without_netkeiba_id_falls_back_to_name_based_key(conn):
+    """`D-206`: 海外調教馬などnetkeibaに登録IDを持たない馬は
+    `horse_source_key`が`None`になる（`href="/horse/"`、ID部分が空）。
+
+    `_resolve_person`（騎手・調教師・馬主）には`None`のガードがあるが、
+    馬は`runners.horse_id`がNOT NULLのため`None`を許容できず、
+    `source_ids.source_key`のNOT NULL制約違反で全レースが失敗していた
+    （実データ、セントウルS2026「ファストネットワーク」で発見）。
+    馬名をフォールバックの識別子にして解決する。
+    """
+    html = build_archive_html(
+        race_id=11, date_y=2026, date_m=9, date_d=6, corner_nos=[1, 2, 3, 4],
+        runners=[
+            {"finish": "1", "number": 1, "name": "国内馬", "passage": "1-1-1-1",
+             "horse_key": "1000000011"},
+            {"finish": "2", "number": 2, "name": "ファストネットワーク", "passage": "2-2-2-2",
+             "horse_key": ""},  # IDを持たない海外調教馬
+        ],
+    )
+    fetcher = _FixedFetcher(html)
+    source = NetkeibaJraSource(fetcher)
+    out = ingest_race(conn, fetcher, source, "11")
+
+    assert out.outcome == "ok"
+    assert out.n_runners == 2
+
+    row = conn.execute(
+        "SELECT source_key FROM source_ids WHERE entity_type='horse' "
+        "AND source_key LIKE 'name:%'"
+    ).fetchone()
+    assert row == ("name:ファストネットワーク",)
+
+    name = conn.execute(
+        "SELECT h.name FROM runners r JOIN horses h USING (horse_id) "
+        "WHERE r.race_id = 11 AND r.number = 2"
+    ).fetchone()
+    assert name == ("ファストネットワーク",)

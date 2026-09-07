@@ -100,7 +100,14 @@ def _write_race(conn: duckdb.DuckDBPyConnection, source: str, parsed: ParsedRace
     )
 
     for r in parsed.runners:
-        horse_id = resolve(conn, "horse", source, r["horse_source_key"], fetched_at)
+        # `_resolve_person`（騎手・調教師・馬主）と違い、馬は必ず存在する
+        # 実体なので `None` を許容できない（`runners.horse_id` が
+        # `NOT NULL`）。海外調教馬など netkeiba に登録IDを持たない馬は
+        # `horse_source_key` が `None` になりうる（`D-206`）——馬名を
+        # フォールバックの識別子にする。`name:` を付けて数字のみの実IDと
+        # 衝突しないようにする
+        horse_key = r["horse_source_key"] or f"name:{r['horse_name']}"
+        horse_id = resolve(conn, "horse", source, horse_key, fetched_at)
         if conn.execute("SELECT 1 FROM horses WHERE horse_id = ?", [horse_id]).fetchone() is None:
             conn.execute(
                 "INSERT INTO horses VALUES (?, ?, NULL, NULL, NULL, NULL, ?, ?)",
