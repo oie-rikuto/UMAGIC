@@ -22,7 +22,7 @@ Web検索で今週末のJRA G1/G2/G3を確認し、netkeibaの`race_id`を特定
   1. `scripts/auto_predict.py <race_id>`を実行し`status`を確認（`weight_not_yet`/`not_drawn`なら何もせず終える。stderrは`2>/dev/null`で捨てる）
   2. `status: ready`かつ`data/auto_predict_reported_<race_id>.flag`が無い場合のみ本分析に進む
   3. `predictions[].drivers`（`explain_race`相当）で根拠を具体化
-  4. Web検索でオッズを取得し市場確率との乖離を計算する。Yahoo!スポーツ競馬のオッズページ（`https://sports.yahoo.co.jp/keiba/race/odds/tfw/<race_id>?ninki=1`）がserver-renderedで使いやすいと実測済み——netkeibaの`shutuba`・モバイル版オッズページはどちらも静的HTMLに実オッズが無い（JavaScriptで後から埋まる）ので使えない
+  4. Web検索でオッズを取得し市場確率との乖離を計算する。Yahoo!スポーツ競馬のオッズページ（`https://sports.yahoo.co.jp/keiba/race/odds/tfw/<yahoo_id>?ninki=1`）がserver-renderedで使いやすいと実測済み——netkeibaの`shutuba`・モバイル版オッズページはどちらも静的HTMLに実オッズが無い（JavaScriptで後から埋まる）ので使えない。**`<yahoo_id>`はnetkeibaの12桁`race_id`から先頭の`20`を除いた10桁**（例: `202608040711` → `2608040711`）。12桁のまま渡すと404になる（2026-10-16に実測）
   5. `duckdb`で`data/umagic.duckdb`に読み取り専用SQLを投げ、乖離が疑わしい馬について枠番別3着内率・騎手のコース成績で裏取り（`status`列は日本語`'出走'`）
   6. Web検索で追い切り・乗り替わり・馬体重増減・陣営コメントを確認し、明確なマイナス材料がある馬は除外する
   7. 買い目案2パターン（予算各1000円）:
