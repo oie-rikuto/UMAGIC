@@ -28,33 +28,77 @@ JOIN races r ON r.race_id = b.race_id
 JOIN runners ru ON ru.race_id = b.race_id AND ru.horse_id = b.horse_id
 """
 
+# D-209: 主戦騎手は「(調教師, 対象日)」だけで決まる。出走馬ごとに過去の全騎乗と結合すると
+# 全履歴で約7億組になり一時領域があふれるため、(調教師, 騎手, 日付)の累積騎乗数を作って
+# 対象日より前の最新値を引く。1文にまとめるとDuckDBの実行計画が悪化するので段階実行する。
+_MAIN_JOCKEY_STAGES = [
+    ("_f703_tg", """
+        SELECT DISTINCT ru.trainer_id, r.date AS target_date
+        FROM base b
+        JOIN races r ON r.race_id = b.race_id
+        JOIN runners ru ON ru.race_id = b.race_id AND ru.horse_id = b.horse_id
+        WHERE ru.trainer_id IS NOT NULL
+    """),
+    ("_f703_cum", """
+        SELECT trainer_id, jockey_id, date,
+               SUM(c) OVER (PARTITION BY trainer_id, jockey_id ORDER BY date) AS n_mounts
+        FROM (
+            SELECT hru.trainer_id, hru.jockey_id, hr.date, COUNT(*) AS c
+            FROM runners hru
+            JOIN races hr ON hr.race_id = hru.race_id
+            WHERE hru.jockey_id IS NOT NULL AND hru.trainer_id IS NOT NULL
+            GROUP BY hru.trainer_id, hru.jockey_id, hr.date
+        )
+    """),
+    ("_f703_cand", """
+        SELECT tg.trainer_id, tg.target_date, tj.jockey_id
+        FROM _f703_tg tg
+        JOIN (SELECT DISTINCT trainer_id, jockey_id FROM _f703_cum) tj
+          ON tj.trainer_id = tg.trainer_id
+    """),
+    # target_date > date（厳密）: 対象日当日の騎乗は数えない
+    ("_f703_prior", """
+        SELECT c.trainer_id, c.target_date, c.jockey_id, cum.n_mounts
+        FROM _f703_cand c
+        ASOF JOIN _f703_cum cum
+          ON c.trainer_id = cum.trainer_id AND c.jockey_id = cum.jockey_id
+         AND c.target_date > cum.date
+    """),
+    ("_f703_main", """
+        SELECT trainer_id, target_date, jockey_id AS main_jockey_id
+        FROM (
+            SELECT trainer_id, target_date, jockey_id,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY trainer_id, target_date ORDER BY n_mounts DESC, jockey_id
+                   ) AS rn
+            FROM _f703_prior
+        )
+        WHERE rn = 1
+    """),
+]
+
 _MAIN_JOCKEY_SQL = """
-WITH targets AS (
-    SELECT DISTINCT b.race_id AS target_race_id, b.horse_id AS target_horse_id,
-           r.date AS target_date, ru.trainer_id
+SELECT t.race_id, t.horse_id, m.main_jockey_id
+FROM (
+    SELECT DISTINCT b.race_id, b.horse_id, r.date AS target_date, ru.trainer_id
     FROM base b
     JOIN races r ON r.race_id = b.race_id
     JOIN runners ru ON ru.race_id = b.race_id AND ru.horse_id = b.horse_id
     WHERE ru.trainer_id IS NOT NULL
-),
-mounts AS (
-    SELECT t.target_race_id, t.target_horse_id, hru.jockey_id, COUNT(*) AS n_mounts
-    FROM targets t
-    JOIN runners hru ON hru.trainer_id = t.trainer_id
-    JOIN races hr ON hr.race_id = hru.race_id AND hr.date < t.target_date
-    WHERE hru.jockey_id IS NOT NULL
-    GROUP BY t.target_race_id, t.target_horse_id, hru.jockey_id
-),
-ranked AS (
-    SELECT target_race_id, target_horse_id, jockey_id, n_mounts,
-           ROW_NUMBER() OVER (
-               PARTITION BY target_race_id, target_horse_id ORDER BY n_mounts DESC, jockey_id
-           ) AS rn
-    FROM mounts
-)
-SELECT target_race_id AS race_id, target_horse_id AS horse_id, jockey_id AS main_jockey_id
-FROM ranked WHERE rn = 1
+) t
+JOIN _f703_main m ON m.trainer_id = t.trainer_id AND m.target_date = t.target_date
 """
+
+
+def _main_jockeys(conn: duckdb.DuckDBPyConnection) -> pl.DataFrame:
+    """`base`（登録済みビュー）の各出走馬の主戦騎手を返す。一時テーブルは必ず破棄する。"""
+    try:
+        for name, sql in _MAIN_JOCKEY_STAGES:
+            conn.execute(f"CREATE OR REPLACE TEMP TABLE {name} AS {sql}")
+        return conn.execute(_MAIN_JOCKEY_SQL).pl()
+    finally:
+        for name, _ in reversed(_MAIN_JOCKEY_STAGES):
+            conn.execute(f"DROP TABLE IF EXISTS {name}")
 
 
 def _travel_flag(affiliation: str | None, course: str | None) -> int | None:
@@ -71,7 +115,7 @@ def compute_f703(
     conn.register("base", base)
     try:
         targets = conn.execute(_TARGET_SQL).pl()
-        main_jockey = conn.execute(_MAIN_JOCKEY_SQL).pl()
+        main_jockey = _main_jockeys(conn)
     finally:
         conn.unregister("base")
 
